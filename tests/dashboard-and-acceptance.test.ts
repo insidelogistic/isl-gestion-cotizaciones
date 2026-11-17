@@ -23,13 +23,13 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     setDatabaseInstance(db);
   });
 
-  it('calcula los 8 indicadores del Dashboard sin duplicar revisiones históricas y sumando el importe efectivamente adjudicado en adjudicaciones parciales', () => {
-    const admin = authenticateUser('DIR-0001', 'AdminISL2026!')!;
-    const editor = authenticateUser('ING-0001', 'EditorISL2026!')!;
+  it('calcula los 8 indicadores del Dashboard sin duplicar revisiones históricas y sumando el importe efectivamente adjudicado en adjudicaciones parciales', async () => {
+    const admin = (await authenticateUser('DIR-0001', 'AdminISL2026!'))!;
+    const editor = (await authenticateUser('ING-0001', 'EditorISL2026!'))!;
 
     // Solicitud 1: Licitación VWM con Rev. 00 ($100,000) y Rev. 01 ($150,000).
     // El Dashboard debe tomar $150,000 como importe ofertado vigente, NO $250,000.
-    const req1 = createQuoteRequest(editor, {
+    const req1 = await createQuoteRequest(editor, {
       origin_type: 'LICITACION_VW',
       project_name: 'Adecuación de Transportador Nave 10',
       description: 'Fabricación y montaje electromecánico.',
@@ -42,34 +42,34 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
       has_economic_excel: true,
     });
 
-    const rev00 = createQuoteRevision(editor, {
+    const rev00 = await createQuoteRevision(editor, {
       request_id: req1.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
       issue_date: '2026-11-02',
       subtotal: 100000,
     });
-    markQuoteRevisionAsPresented(editor, {
+    await markQuoteRevisionAsPresented(editor, {
       revision_id: rev00.id,
       presentation_date: '2026-11-03',
       presentation_channel: 'PLATAFORMA_VW',
     });
 
-    const rev01 = createQuoteRevision(editor, {
+    const rev01 = await createQuoteRevision(editor, {
       request_id: req1.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
       issue_date: '2026-11-05',
       subtotal: 150000,
     });
-    markQuoteRevisionAsPresented(editor, {
+    await markQuoteRevisionAsPresented(editor, {
       revision_id: rev01.id,
       presentation_date: '2026-11-06',
       presentation_channel: 'PLATAFORMA_VW',
     });
 
     // Solicitud 2: Solicitud Directa VW con oferta de $200,000 pero Adjudicada Parcialmente por $120,000
-    const req2 = createQuoteRequest(editor, {
+    const req2 = await createQuoteRequest(editor, {
       origin_type: 'DIRECTA_VW',
       project_name: 'Maquinado de Dispositivos de Control',
       description: 'Maquinado CNC de precisión.',
@@ -82,7 +82,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
       reception_channel: 'Correo electrónico',
     });
 
-    const rev2_00 = createQuoteRevision(editor, {
+    const rev2_00 = await createQuoteRevision(editor, {
       request_id: req2.id,
       modality: 'INTERNAL',
       currency: 'MXN',
@@ -92,13 +92,13 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
         { concept: 'Partida 2', unit: 'Lote', quantity: 1, unit_price: 80000 },
       ],
     });
-    markQuoteRevisionAsPresented(editor, {
+    await markQuoteRevisionAsPresented(editor, {
       revision_id: rev2_00.id,
       presentation_date: '2026-11-04',
       presentation_channel: 'CORREO',
     });
 
-    const evDoc = uploadExpedienteDocument(editor, {
+    const evDoc = await uploadExpedienteDocument(editor, {
       request_id: req2.id,
       category: 'ORDEN_COMPRA',
       original_name: 'OC_PARCIAL_120K.pdf',
@@ -106,7 +106,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
       content_base64: Buffer.from('OC PARCIAL').toString('base64'),
     });
 
-    registerCommercialClosure(editor, {
+    await registerCommercialClosure(editor, {
       request_id: req2.id,
       result: 'ADJUDICADA_PARCIALMENTE',
       closure_date: '2026-11-12',
@@ -117,7 +117,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
       comments: 'Se adjudicó únicamente la Partida 1.',
     });
 
-    const metrics = getDashboardMetrics({ referenceDateStr: '2026-11-13' });
+    const metrics = await getDashboardMetrics({ referenceDateStr: '2026-11-13' });
 
     // Importe total ofertado vigente: $150,000 (req1 Rev.01) + $200,000 (req2 Rev.00) = $350,000 (sin sumar los $100,000 de Rev.00 de req1)
     expect(metrics.totalOfferedAmount).toBe(350000);
@@ -130,7 +130,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(metrics.closedCount).toBe(1);
 
     // Filtrado por responsable en el Dashboard
-    const editorMetrics = getDashboardMetrics({
+    const editorMetrics = await getDashboardMetrics({
       responsibleUserId: editor.id,
       referenceDateStr: '2026-11-13',
     });
@@ -138,17 +138,17 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(editorMetrics.totalAwardedAmount).toBe(0);
   });
 
-  it('valida de extremo a extremo los 20 casos de aceptación de la Sección 18 del Prompt Maestro', () => {
+  it('valida de extremo a extremo los 20 casos de aceptación de la Sección 18 del Prompt Maestro', async () => {
     // 1. Iniciar sesión con usuario válido e inválido
-    const admin = authenticateUser('DIR-0001', 'AdminISL2026!')!;
-    const editor = authenticateUser('ING-0001', 'EditorISL2026!')!;
-    const consulta = authenticateUser('CON-0001', 'ConsultaISL2026!')!;
-    const invalid = authenticateUser('DIR-0001', 'ClaveIncorrecta');
+    const admin = (await authenticateUser('DIR-0001', 'AdminISL2026!'))!;
+    const editor = (await authenticateUser('ING-0001', 'EditorISL2026!'))!;
+    const consulta = (await authenticateUser('CON-0001', 'ConsultaISL2026!'))!;
+    const invalid = await authenticateUser('DIR-0001', 'ClaveIncorrecta');
     expect(admin.role).toBe('ADMIN');
     expect(invalid).toBeNull();
 
     // 2. Verificar permisos por rol (Consulta no puede crear solicitud)
-    expect(() =>
+    await expect(
       createQuoteRequest(consulta, {
         origin_type: 'DIRECTA_VW',
         project_name: 'Intento no autorizado',
@@ -159,10 +159,10 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
         vw_requester_name: 'Test',
         reception_channel: 'Correo',
       })
-    ).toThrow(PermissionError);
+    ).rejects.toThrow(PermissionError);
 
     // 3, 4 y 5. Crear solicitud por Licitación VW, Solicitud Directa VW y Otro Cliente
-    const reqLicVw = createQuoteRequest(editor, {
+    const reqLicVw = await createQuoteRequest(editor, {
       origin_type: 'LICITACION_VW',
       project_name: 'Licitación Cabina Pintura',
       description: 'Mantenimiento mayor en cabina.',
@@ -174,7 +174,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
       has_lastenheft: true,
       has_economic_excel: true,
     });
-    const reqDirVw = createQuoteRequest(editor, {
+    const reqDirVw = await createQuoteRequest(editor, {
       origin_type: 'DIRECTA_VW',
       project_name: 'Solicitud Directa Prensas',
       description: 'Reparación de guardas.',
@@ -188,7 +188,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     });
 
     // 6. Crear cliente y contacto nuevos
-    const newCust = createCustomer(editor, {
+    const newCust = await createCustomer(editor, {
       name: 'Benteler de México S.A. de C.V.',
       short_name: 'BENTELER',
       rfc: 'BME990101AAA',
@@ -196,9 +196,9 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
       contact_name: 'Ing. Ricardo Soto',
       contact_email: 'rsoto@benteler.com',
     });
-    expect(listCustomers().some((c) => c.id === newCust.id)).toBe(true);
+    expect((await listCustomers()).some((c) => c.id === newCust.id)).toBe(true);
 
-    const reqOtro = createQuoteRequest(editor, {
+    const reqOtro = await createQuoteRequest(editor, {
       origin_type: 'OTRO_CLIENTE',
       customer_id: newCust.id,
       project_name: 'Maquinado de Troqueles Benteler',
@@ -217,7 +217,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(reqOtro.folio).toBe('COT-2026-BEN-0003');
 
     // 8. Subir y descargar archivos en la estructura de Google Drive
-    const doc = uploadExpedienteDocument(editor, {
+    const doc = await uploadExpedienteDocument(editor, {
       request_id: reqLicVw.id,
       category: 'LASTENHEFT',
       original_name: 'LASTENHEFT_CABINA.pdf',
@@ -227,7 +227,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(doc.drive_folder_path).toContain('IN SIDE LOGISTIC / COTIZACIONES / 2026 / COT-2026-VOL-0001');
 
     // 9. Capturar cotización dentro de la aplicación (Modalidad A)
-    const revInt = createQuoteRevision(editor, {
+    const revInt = await createQuoteRevision(editor, {
       request_id: reqDirVw.id,
       modality: 'INTERNAL',
       currency: 'MXN',
@@ -237,7 +237,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(revInt.subtotal).toBe(90000);
 
     // 10. Registrar cotización elaborada externamente (Modalidad B)
-    const revExt = createQuoteRevision(editor, {
+    const revExt = await createQuoteRevision(editor, {
       request_id: reqLicVw.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
@@ -248,7 +248,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(revExt.revision_code).toBe('Rev. 00');
 
     // 11. Crear revisión adicional
-    const revExt01 = createQuoteRevision(editor, {
+    const revExt01 = await createQuoteRevision(editor, {
       request_id: reqLicVw.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
@@ -258,23 +258,23 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(revExt01.revision_code).toBe('Rev. 01');
 
     // 12 y 13. Marcar como presentada e impedir modificar revisión presentada
-    const pres = markQuoteRevisionAsPresented(editor, {
+    const pres = await markQuoteRevisionAsPresented(editor, {
       revision_id: revExt01.id,
       presentation_date: '2026-11-13',
       presentation_channel: 'PLATAFORMA_VW',
     });
     expect(pres.revision.is_immutable).toBe(1);
-    expect(() =>
+    await expect(
       updateDraftQuoteRevision(editor, revExt01.id, {
         currency: 'MXN',
         issue_date: '2026-11-14',
         subtotal: 290000,
       })
-    ).toThrow(/inmutable/i);
+    ).rejects.toThrow(/inmutable/i);
 
     // 14 y 15. Programar recordatorio automático y registrar actividades de seguimiento
     expect(pres.proposedFollowUpDate).toBe('2026-11-18');
-    const act = registerFollowUpActivity(editor, {
+    const act = await registerFollowUpActivity(editor, {
       request_id: reqLicVw.id,
       activity_type: 'ACLARACION',
       activity_date: '2026-11-14',
@@ -285,23 +285,23 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(act.id).toBeTruthy();
 
     // 16 y 17. Impedir cierre ganador sin evidencia y permitir cierre con evidencia
-    expect(() =>
+    await expect(
       registerCommercialClosure(editor, {
         request_id: reqLicVw.id,
         result: 'GANADA',
         closure_date: '2026-11-15',
         awarded_amount: 310000,
       })
-    ).toThrow(/evidencia documental/i);
+    ).rejects.toThrow(/evidencia documental/i);
 
-    const oc = uploadExpedienteDocument(editor, {
+    const oc = await uploadExpedienteDocument(editor, {
       request_id: reqLicVw.id,
       category: 'ORDEN_COMPRA',
       original_name: 'OC_CABINA.pdf',
       mime_type: 'application/pdf',
       content_base64: Buffer.from('OC CABINA').toString('base64'),
     });
-    const closure = registerCommercialClosure(editor, {
+    const closure = await registerCommercialClosure(editor, {
       request_id: reqLicVw.id,
       result: 'GANADA',
       closure_date: '2026-11-15',
@@ -311,7 +311,7 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(closure.awarded_amount).toBe(310000);
 
     // 18. Registrar cierre perdido o cancelado
-    const lost = registerCommercialClosure(editor, {
+    const lost = await registerCommercialClosure(editor, {
       request_id: reqOtro.id,
       result: 'PERDIDA',
       closure_date: '2026-11-15',
@@ -320,13 +320,13 @@ describe('ENTREGA 4 — Dashboard Ejecutivo y 20 Pruebas de Aceptación (Secció
     expect(lost.result).toBe('PERDIDA');
 
     // 19. Verificar indicadores del Dashboard sin duplicar revisiones
-    const dash = getDashboardMetrics({ referenceDateStr: '2026-11-15' });
+    const dash = await getDashboardMetrics({ referenceDateStr: '2026-11-15' });
     // reqLicVw: Rev.01 ($310k, ignora Rev.00 de $320k) + reqDirVw: Rev.00 ($90k) = $400,000
     expect(dash.totalOfferedAmount).toBe(400000);
     expect(dash.totalAwardedAmount).toBe(310000);
 
     // 20. Filtrar y buscar solicitudes en tabla y Kanban
-    const filteredBenteler = listQuoteRequests({ search: 'BEN-0003' });
+    const filteredBenteler = await listQuoteRequests({ search: 'BEN-0003' });
     expect(filteredBenteler.length).toBe(1);
     expect(filteredBenteler[0].customer_short_name).toBe('BENTELER');
   });

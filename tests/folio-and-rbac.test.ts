@@ -10,33 +10,33 @@ describe('Entrega 1 — Folios Automáticos, Autenticación y Permisos (RBAC)', 
     setDatabaseInstance(db);
   });
 
-  it('genera folios internos únicos secuenciales por año con las 3 primeras letras de la empresa (COT-YYYY-EMP-NNNN)', () => {
-    const f1 = generateNextFolio(2026, 'Volkswagen de México S.A. de C.V.');
-    const f2 = generateNextFolio(2026, 'Audi México S.A. de C.V.');
-    const f3 = generateNextFolio(2027, 'Gestamp Puebla S.A. de C.V.');
+  it('genera folios internos únicos secuenciales por año con las 3 primeras letras de la empresa (COT-YYYY-EMP-NNNN)', async () => {
+    const f1 = await generateNextFolio(2026, 'Volkswagen de México S.A. de C.V.');
+    const f2 = await generateNextFolio(2026, 'Audi México S.A. de C.V.');
+    const f3 = await generateNextFolio(2027, 'Gestamp Puebla S.A. de C.V.');
 
     expect(f1).toBe('COT-2026-VOL-0001');
     expect(f2).toBe('COT-2026-AUD-0002');
     expect(f3).toBe('COT-2027-GES-0001');
   });
 
-  it('autentica usuarios autorizados por correo o código de empleado y rechaza credenciales inválidas', () => {
-    const admin = authenticateUser('DIR-0001', 'AdminISL2026!');
+  it('autentica usuarios autorizados por correo o código de empleado y rechaza credenciales inválidas', async () => {
+    const admin = await authenticateUser('DIR-0001', 'AdminISL2026!');
     expect(admin).not.toBeNull();
     expect(admin?.role).toBe('ADMIN');
 
-    const editor = authenticateUser('cotizaciones@insidelogistic.com.mx', 'EditorISL2026!');
+    const editor = await authenticateUser('cotizaciones@insidelogistic.com.mx', 'EditorISL2026!');
     expect(editor).not.toBeNull();
     expect(editor?.role).toBe('EDITOR');
 
-    const invalid = authenticateUser('DIR-0001', 'WrongPass');
+    const invalid = await authenticateUser('DIR-0001', 'WrongPass');
     expect(invalid).toBeNull();
   });
 
-  it('restringe acciones según rol: CONSULTA no puede modificar datos y EDITOR no puede administrar usuarios', () => {
-    const admin = authenticateUser('DIR-0001', 'AdminISL2026!')!;
-    const editor = authenticateUser('ING-0001', 'EditorISL2026!')!;
-    const viewer = authenticateUser('CON-0001', 'ConsultaISL2026!')!;
+  it('restringe acciones según rol: CONSULTA no puede modificar datos y EDITOR no puede administrar usuarios', async () => {
+    const admin = (await authenticateUser('DIR-0001', 'AdminISL2026!'))!;
+    const editor = (await authenticateUser('ING-0001', 'EditorISL2026!'))!;
+    const viewer = (await authenticateUser('CON-0001', 'ConsultaISL2026!'))!;
 
     expect(() => assertPermission(admin, 'MANAGE_USERS')).not.toThrow();
     expect(() => assertPermission(editor, 'CREATE_REQUEST')).not.toThrow();

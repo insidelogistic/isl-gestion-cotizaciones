@@ -22,16 +22,16 @@ export async function PATCH(
 
     let updated;
     if (action === 'COMPLETE') {
-      updated = completeFollowUpActivity(user, activityId, body.comment);
+      updated = await completeFollowUpActivity(user, activityId, body.comment);
     } else if (action === 'RESCHEDULE') {
-      updated = rescheduleFollowUpActivity(
+      updated = await rescheduleFollowUpActivity(
         user,
         activityId,
         body.next_activity_date,
         body.next_activity_description
       );
     } else if (action === 'CANCEL') {
-      updated = cancelFollowUpReminder(user, activityId);
+      updated = await cancelFollowUpReminder(user, activityId);
     } else {
       return NextResponse.json(
         { success: false, message: 'Acción sobre recordatorio no reconocida.' },

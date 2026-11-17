@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, nowMexicoISO } from '../db';
+import { getAsyncDb, nowMexicoISO } from '../db';
 import { assertPermission } from '../auth/rbac';
 import type { SafeUser } from '../db/types';
 
@@ -82,7 +82,7 @@ export function formatClosureResultLabel(res: string): string {
   }
 }
 
-export function registerCommercialClosure(
+export async function registerCommercialClosure(
   actor: SafeUser,
   input: {
     request_id: string;
@@ -98,22 +98,22 @@ export function registerCommercialClosure(
     comments?: string | null;
     evidence_document_id?: string | null;
   }
-): CommercialClosureRecord {
+): Promise<CommercialClosureRecord> {
   assertPermission(actor, 'CLOSE_QUOTE');
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
 
-  const reqRow = db
-    .prepare('SELECT id, folio, status FROM quote_requests WHERE id = ?')
-    .get(input.request_id) as { id: string; folio: string; status: string } | undefined;
+  const reqRow = await db.get<{ id: string; folio: string; status: string }>(
+    'SELECT id, folio, status FROM quote_requests WHERE id = ?',
+    input.request_id
+  );
 
   if (!reqRow) {
     throw new Error('Expediente de solicitud no encontrado.');
   }
 
   const dbResult = mapToDbResult(input.result);
-  const isAward =
-    dbResult === 'ADJUDICADA_TOTAL' || dbResult === 'ADJUDICADA_PARCIAL';
+  const isAward = dbResult === 'ADJUDICADA_TOTAL' || dbResult === 'ADJUDICADA_PARCIAL';
 
   let resolvedEvidenceDocId: string | null = input.evidence_document_id || null;
 
@@ -125,18 +125,18 @@ export function registerCommercialClosure(
       );
     }
 
-    const existingEvidenceDocs = db
-      .prepare(
-        `SELECT id, original_name, category
-         FROM documents
-         WHERE request_id = ?
-           AND (category IN ('ORDEN_COMPRA', 'EVIDENCIA_ADJUDICACION') OR id = ?)`
-      )
-      .all(input.request_id, input.evidence_document_id || '') as Array<{
+    const existingEvidenceDocs = await db.all<{
       id: string;
       original_name: string;
       category: string;
-    }>;
+    }>(
+      `SELECT id, original_name, category
+       FROM documents
+       WHERE request_id = ?
+         AND (category IN ('ORDEN_COMPRA', 'EVIDENCIA_ADJUDICACION') OR id = ?)`,
+      input.request_id,
+      input.evidence_document_id || ''
+    );
 
     if (existingEvidenceDocs.length === 0) {
       throw new Error(
@@ -161,22 +161,20 @@ export function registerCommercialClosure(
   const closureId = `cls-${crypto.randomUUID().slice(0, 8)}`;
   const currency = input.awarded_currency || input.currency || 'MXN';
   const poRef = input.purchase_order_number || input.purchase_order_ref || null;
-  const combinedComments = [input.loss_reason?.trim(), input.comments?.trim()]
-    .filter(Boolean)
-    .join(' — ') || 'Cierre comercial registrado.';
+  const combinedComments =
+    [input.loss_reason?.trim(), input.comments?.trim()].filter(Boolean).join(' — ') ||
+    'Cierre comercial registrado.';
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    db.prepare('DELETE FROM commercial_closures WHERE request_id = ?').run(input.request_id);
+  await db.transaction(async (tx) => {
+    await tx.run('DELETE FROM commercial_closures WHERE request_id = ?', input.request_id);
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO commercial_closures (
         id, request_id, result, closure_date,
         awarded_revision_id, awarded_amount, currency,
         purchase_order_ref, comments, evidence_document_id,
         closed_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       closureId,
       input.request_id,
       dbResult,
@@ -192,29 +190,33 @@ export function registerCommercialClosure(
     );
 
     if (resolvedEvidenceDocId) {
-      db.prepare('UPDATE documents SET closure_id = ? WHERE id = ? AND request_id = ?').run(
+      await tx.run(
+        'UPDATE documents SET closure_id = ? WHERE id = ? AND request_id = ?',
         closureId,
         resolvedEvidenceDocId,
         input.request_id
       );
     }
 
-    db.prepare(
+    await tx.run(
       `UPDATE quote_requests
        SET status = 'CERRADA', updated_by = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(actor.id, now, input.request_id);
+       WHERE id = ?`,
+      actor.id,
+      now,
+      input.request_id
+    );
 
-    db.prepare(
+    await tx.run(
       `UPDATE follow_up_activities
        SET reminder_cancelled = 1
-       WHERE request_id = ? AND is_completed = 0`
-    ).run(input.request_id);
+       WHERE request_id = ? AND is_completed = 0`,
+      input.request_id
+    );
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-       VALUES (?, 'QUOTE_REQUEST', ?, 'CIERRE_COMERCIAL_REGISTRADO', ?, ?, ?)`
-    ).run(
+       VALUES (?, 'QUOTE_REQUEST', ?, 'CIERRE_COMERCIAL_REGISTRADO', ?, ?, ?)`,
       crypto.randomUUID(),
       input.request_id,
       actor.id,
@@ -229,58 +231,47 @@ export function registerCommercialClosure(
       }),
       now
     );
+  });
 
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  const saved = getCommercialClosureByRequestId(input.request_id)!;
+  const saved = (await getCommercialClosureByRequestId(input.request_id))!;
   return {
     ...saved,
     result: input.result,
   };
 }
 
-export function getCommercialClosureByRequestId(
+export async function getCommercialClosureByRequestId(
   requestId: string
-): CommercialClosureRecord | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT
-        cc.*,
-        qr.folio,
-        qr.project_name,
-        c.name AS customer_name,
-        c.short_name AS customer_short_name,
-        u.name AS closed_by_name
-       FROM commercial_closures cc
-       JOIN quote_requests qr ON qr.id = cc.request_id
-       JOIN customers c ON c.id = qr.customer_id
-       JOIN users u ON u.id = cc.closed_by
-       WHERE cc.request_id = ?`
-    )
-    .get(requestId) as unknown as CommercialClosureRecord | undefined;
+): Promise<CommercialClosureRecord | null> {
+  const db = await getAsyncDb();
+  const row = await db.get<CommercialClosureRecord>(
+    `SELECT
+      cc.*,
+      qr.folio,
+      qr.project_name,
+      c.name AS customer_name,
+      c.short_name AS customer_short_name,
+      u.name AS closed_by_name
+     FROM commercial_closures cc
+     JOIN quote_requests qr ON qr.id = cc.request_id
+     JOIN customers c ON c.id = qr.customer_id
+     JOIN users u ON u.id = cc.closed_by
+     WHERE cc.request_id = ?`,
+    requestId
+  );
 
   if (!row) return null;
 
-  const docs = (
-    db
-      .prepare(
-        `SELECT id, original_name, category
-         FROM documents
-         WHERE request_id = ?
-           AND (closure_id = ? OR id = ? OR category IN ('ORDEN_COMPRA', 'EVIDENCIA_ADJUDICACION'))
-         ORDER BY created_at DESC`
-      )
-      .all(requestId, row.id, row.evidence_document_id || '') as Array<{
-      id: string;
-      original_name: string;
-      category: string;
-    }>
-  ).map((d) => ({ ...d }));
+  const docs = await db.all<{ id: string; original_name: string; category: string }>(
+    `SELECT id, original_name, category
+     FROM documents
+     WHERE request_id = ?
+       AND (closure_id = ? OR id = ? OR category IN ('ORDEN_COMPRA', 'EVIDENCIA_ADJUDICACION'))
+     ORDER BY created_at DESC`,
+    requestId,
+    row.id,
+    row.evidence_document_id || ''
+  );
 
   return {
     ...row,
@@ -290,46 +281,41 @@ export function getCommercialClosureByRequestId(
   };
 }
 
-export function listCommercialClosures(): CommercialClosureRecord[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT
-        cc.*,
-        qr.folio,
-        qr.project_name,
-        c.name AS customer_name,
-        c.short_name AS customer_short_name,
-        u.name AS closed_by_name
-       FROM commercial_closures cc
-       JOIN quote_requests qr ON qr.id = cc.request_id
-       JOIN customers c ON c.id = qr.customer_id
-       JOIN users u ON u.id = cc.closed_by
-       ORDER BY cc.closure_date DESC, cc.created_at DESC`
-    )
-    .all() as unknown as CommercialClosureRecord[];
+export async function listCommercialClosures(): Promise<CommercialClosureRecord[]> {
+  const db = await getAsyncDb();
+  const rows = await db.all<CommercialClosureRecord>(
+    `SELECT
+      cc.*,
+      qr.folio,
+      qr.project_name,
+      c.name AS customer_name,
+      c.short_name AS customer_short_name,
+      u.name AS closed_by_name
+     FROM commercial_closures cc
+     JOIN quote_requests qr ON qr.id = cc.request_id
+     JOIN customers c ON c.id = qr.customer_id
+     JOIN users u ON u.id = cc.closed_by
+     ORDER BY cc.closure_date DESC, cc.created_at DESC`
+  );
 
-  return rows.map((r) => {
-    const docs = (
-      db
-        .prepare(
-          `SELECT id, original_name, category
-           FROM documents
-           WHERE request_id = ?
-             AND (closure_id = ? OR id = ? OR category IN ('ORDEN_COMPRA', 'EVIDENCIA_ADJUDICACION'))
-           ORDER BY created_at DESC`
-        )
-        .all(r.request_id, r.id, r.evidence_document_id || '') as Array<{
-        id: string;
-        original_name: string;
-        category: string;
-      }>
-    ).map((d) => ({ ...d }));
-    return {
+  const out: CommercialClosureRecord[] = [];
+  for (const r of rows) {
+    const docs = await db.all<{ id: string; original_name: string; category: string }>(
+      `SELECT id, original_name, category
+       FROM documents
+       WHERE request_id = ?
+         AND (closure_id = ? OR id = ? OR category IN ('ORDEN_COMPRA', 'EVIDENCIA_ADJUDICACION'))
+       ORDER BY created_at DESC`,
+      r.request_id,
+      r.id,
+      r.evidence_document_id || ''
+    );
+    out.push({
       ...r,
       awarded_currency: r.currency,
       purchase_order_number: r.purchase_order_ref,
       evidence_documents: docs,
-    };
-  });
+    });
+  }
+  return out;
 }

@@ -12,7 +12,7 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const documents = listExpedienteDocuments(id);
+  const documents = await listExpedienteDocuments(id);
   return NextResponse.json({ success: true, documents });
 }
 
@@ -28,7 +28,7 @@ export async function POST(
 
     const { id } = await context.params;
     const body = await request.json();
-    const document = uploadExpedienteDocument(user, {
+    const document = await uploadExpedienteDocument(user, {
       request_id: id,
       revision_id: body.revision_id || null,
       activity_id: body.activity_id || null,

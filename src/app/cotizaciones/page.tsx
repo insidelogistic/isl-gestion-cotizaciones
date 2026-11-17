@@ -29,19 +29,21 @@ export default async function CotizacionesPage() {
   const user = await getSessionUser();
   if (!user) redirect('/login');
 
-  const requests = listQuoteRequests({});
-  const closures = listCommercialClosures();
+  const requests = await listQuoteRequests({});
+  const closures = await listCommercialClosures();
   const closureByRequestId = new Map(closures.map((c) => [c.request_id, c]));
 
   const urgentCount = requests.filter(
     (r) => r.deadline_semaphore === 'POR_VENCER' || r.deadline_semaphore === 'VENCIDA'
   ).length;
 
-  const rowsWithRevisions = requests.map((req) => ({
-    request: req,
-    revisions: listQuoteRevisions(req.id),
-    closure: closureByRequestId.get(req.id),
-  }));
+  const rowsWithRevisions = await Promise.all(
+    requests.map(async (req) => ({
+      request: req,
+      revisions: await listQuoteRevisions(req.id),
+      closure: closureByRequestId.get(req.id),
+    }))
+  );
 
   const pdfRows: QuotePdfRow[] = rowsWithRevisions.map(({ request: r, revisions, closure }) => ({
     folio: r.folio,

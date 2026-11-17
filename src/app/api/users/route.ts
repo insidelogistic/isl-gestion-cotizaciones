@@ -9,7 +9,7 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ success: false, message: 'No autorizado.' }, { status: 401 });
   }
-  return NextResponse.json({ success: true, users: listUsers() });
+  return NextResponse.json({ success: true, users: await listUsers() });
 }
 
 export async function POST(request: Request) {
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
   }
   try {
     const body = await request.json();
-    const created = createUser(user, body);
+    const created = await createUser(user, body);
     return NextResponse.json({ success: true, user: created }, { status: 201 });
   } catch (err) {
     if (err instanceof PermissionError) {
@@ -49,7 +49,7 @@ export async function DELETE(request: Request) {
     if (!id) {
       return NextResponse.json({ success: false, message: 'ID de usuario requerido.' }, { status: 400 });
     }
-    deleteUser(user, id);
+    await deleteUser(user, id);
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al eliminar usuario.';

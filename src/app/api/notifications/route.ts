@@ -11,7 +11,7 @@ export async function GET() {
     return NextResponse.json({ success: false, message: 'No autorizado.' }, { status: 401 });
   }
 
-  const summary = getOperationalAlertsSummary();
+  const summary = await getOperationalAlertsSummary();
   return NextResponse.json({ success: true, summary });
 }
 
@@ -22,7 +22,7 @@ export async function POST() {
       return NextResponse.json({ success: false, message: 'No autorizado.' }, { status: 401 });
     }
 
-    const result = dispatchInternalAlertEmails(user);
+    const result = await dispatchInternalAlertEmails(user);
     return NextResponse.json({ success: true, ...result });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al despachar avisos internos.';

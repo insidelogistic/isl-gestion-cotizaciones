@@ -13,7 +13,7 @@ export async function GET(
     }
 
     const { docId } = await context.params;
-    const { record, buffer } = getDocumentForDownload(user, docId);
+    const { record, buffer } = await getDocumentForDownload(user, docId);
 
     const safeName = encodeURIComponent(record.original_name);
     return new NextResponse(new Uint8Array(buffer), {

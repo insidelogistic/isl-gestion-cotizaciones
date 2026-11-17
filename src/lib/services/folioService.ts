@@ -1,4 +1,4 @@
-import { getDb } from '../db';
+import { getAsyncDb } from '../db';
 
 export function extractCompanyPrefix(companyName?: string): string {
   if (!companyName) return 'GEN';
@@ -11,8 +11,11 @@ export function extractCompanyPrefix(companyName?: string): string {
   return cleaned.slice(0, 3).padEnd(3, 'X');
 }
 
-export function generateNextFolio(yearInput?: number, companyName?: string): string {
-  const db = getDb();
+export async function generateNextFolio(
+  yearInput?: number,
+  companyName?: string
+): Promise<string> {
+  const db = await getAsyncDb();
   const year =
     yearInput ??
     Number(
@@ -24,25 +27,25 @@ export function generateNextFolio(yearInput?: number, companyName?: string): str
 
   const companyPrefix = extractCompanyPrefix(companyName);
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    const row = db
-      .prepare('SELECT last_number FROM folio_sequences WHERE year = ?')
-      .get(year) as { last_number: number } | undefined;
+  return db.transaction(async (tx) => {
+    const row = await tx.get<{ last_number: number }>(
+      'SELECT last_number FROM folio_sequences WHERE year = ?',
+      year
+    );
 
     const nextNum = (row?.last_number ?? 0) + 1;
 
     if (row) {
-      db.prepare('UPDATE folio_sequences SET last_number = ? WHERE year = ?').run(nextNum, year);
+      await tx.run('UPDATE folio_sequences SET last_number = ? WHERE year = ?', nextNum, year);
     } else {
-      db.prepare('INSERT INTO folio_sequences (year, last_number) VALUES (?, ?)').run(year, nextNum);
+      await tx.run(
+        'INSERT INTO folio_sequences (year, last_number) VALUES (?, ?)',
+        year,
+        nextNum
+      );
     }
 
-    db.exec('COMMIT');
     const padded = String(nextNum).padStart(4, '0');
     return `COT-${year}-${companyPrefix}-${padded}`;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 }

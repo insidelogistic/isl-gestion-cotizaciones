@@ -22,13 +22,13 @@ export default async function ExpedientePage({
 
   const { id } = await params;
   const sp = await searchParams;
-  const detail = getQuoteRequestById(id);
+  const detail = await getQuoteRequestById(id);
   if (!detail) {
     notFound();
   }
 
-  const requests = listQuoteRequests({});
-  const users = listUsers();
+  const requests = await listQuoteRequests({});
+  const users = await listUsers();
   const urgentCount = requests.filter(
     (r) => r.deadline_semaphore === 'POR_VENCER' || r.deadline_semaphore === 'VENCIDA'
   ).length;

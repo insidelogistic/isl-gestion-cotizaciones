@@ -26,11 +26,11 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     setDatabaseInstance(db);
   });
 
-  it('1. Registra actividades en la línea de tiempo y permite reprogramar, completar o cancelar recordatorios', () => {
-    const users = listUsers();
+  it('1. Registra actividades en la línea de tiempo y permite reprogramar, completar o cancelar recordatorios', async () => {
+    const users = await listUsers();
     const editor = users.find((u) => u.role === 'EDITOR')!;
 
-    const req = createQuoteRequest(editor, {
+    const req = await createQuoteRequest(editor, {
       origin_type: 'DIRECTA_VW',
       project_name: 'Mantenimiento Preventivo Polipastos Nave 4',
       description: 'Inspección y reemplazo de baleros y contactores.',
@@ -43,7 +43,7 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
       reception_channel: 'Correo electrónico',
     });
 
-    const act1 = registerFollowUpActivity(editor, {
+    const act1 = await registerFollowUpActivity(editor, {
       request_id: req.id,
       activity_type: 'LLAMADA',
       activity_date: '2026-11-11',
@@ -57,7 +57,7 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     expect(act1.is_completed).toBe(0);
 
     // Reprogramar compromiso
-    const rescheduled = rescheduleFollowUpActivity(
+    const rescheduled = await rescheduleFollowUpActivity(
       editor,
       act1.id,
       '2026-11-17',
@@ -66,11 +66,11 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     expect(rescheduled.next_activity_date).toBe('2026-11-17');
 
     // Completar compromiso
-    const completed = completeFollowUpActivity(editor, act1.id, 'Propuesta revisada con usuario');
+    const completed = await completeFollowUpActivity(editor, act1.id, 'Propuesta revisada con usuario');
     expect(completed.is_completed).toBe(1);
 
     // Crear otro recordatorio y cancelarlo
-    const act2 = registerFollowUpActivity(editor, {
+    const act2 = await registerFollowUpActivity(editor, {
       request_id: req.id,
       activity_type: 'CORREO',
       activity_date: '2026-11-12',
@@ -79,19 +79,19 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
       next_activity_description: 'Confirmar visto bueno técnico',
     });
 
-    const cancelled = cancelFollowUpReminder(editor, act2.id);
+    const cancelled = await cancelFollowUpReminder(editor, act2.id);
     expect(cancelled.reminder_cancelled).toBe(1);
 
-    const pendingCommitments = listFollowUpCommitments({ onlyPending: true });
+    const pendingCommitments = await listFollowUpCommitments({ onlyPending: true });
     expect(pendingCommitments.some((c) => c.id === act1.id)).toBe(false);
     expect(pendingCommitments.some((c) => c.id === act2.id)).toBe(false);
   });
 
-  it('2. Impide guardar un cierre GANADA o ADJUDICADA_PARCIALMENTE sin evidencia documental y lo permite al adjuntar Orden de Compra o Evidencia', () => {
-    const users = listUsers();
+  it('2. Impide guardar un cierre GANADA o ADJUDICADA_PARCIALMENTE sin evidencia documental y lo permite al adjuntar Orden de Compra o Evidencia', async () => {
+    const users = await listUsers();
     const editor = users.find((u) => u.role === 'EDITOR')!;
 
-    const req = createQuoteRequest(editor, {
+    const req = await createQuoteRequest(editor, {
       origin_type: 'LICITACION_VW',
       project_name: 'Fabricación de Carros Portaherramientas Nave 12',
       description: 'Lote de 15 carros estructurales con ruedas de poliuretano.',
@@ -104,7 +104,7 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
       has_economic_excel: true,
     });
 
-    const rev00 = createQuoteRevision(editor, {
+    const rev00 = await createQuoteRevision(editor, {
       request_id: req.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
@@ -114,14 +114,14 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
       observations: 'Oferta en estructura económica VWM.',
     });
 
-    markQuoteRevisionAsPresented(editor, {
+    await markQuoteRevisionAsPresented(editor, {
       revision_id: rev00.id,
       presentation_date: '2026-11-09',
       presentation_channel: 'PLATAFORMA_VW',
     });
 
     // Intentar cerrar como GANADA sin evidencia documental -> DEBE FALLAR
-    expect(() =>
+    await expect(
       registerCommercialClosure(editor, {
         request_id: req.id,
         result: 'GANADA',
@@ -131,10 +131,10 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
         purchase_order_number: '4500991122',
         comments: 'Adjudicación confirmada en portal VWM.',
       })
-    ).toThrow(/evidencia documental/i);
+    ).rejects.toThrow(/evidencia documental/i);
 
     // Adjuntar Orden de Compra / Evidencia de adjudicación
-    const ocDoc = uploadExpedienteDocument(editor, {
+    const ocDoc = await uploadExpedienteDocument(editor, {
       request_id: req.id,
       category: 'ORDEN_COMPRA',
       original_name: 'OC_4500991122_VWM.pdf',
@@ -143,7 +143,7 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     });
 
     // Ahora sí debe permitir registrar el cierre comercial GANADA
-    const closure = registerCommercialClosure(editor, {
+    const closure = await registerCommercialClosure(editor, {
       request_id: req.id,
       result: 'GANADA',
       closure_date: '2026-11-13',
@@ -157,10 +157,10 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     expect(closure.result).toBe('GANADA');
     expect(closure.awarded_amount).toBe(480000);
 
-    const detail = getQuoteRequestById(req.id)!;
+    const detail = (await getQuoteRequestById(req.id))!;
     expect(detail.request.status).toBe('CERRADA');
 
-    const closuresList = listCommercialClosures();
+    const closuresList = await listCommercialClosures();
     expect(
       closuresList.some(
         (c) =>
@@ -170,11 +170,11 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     ).toBe(true);
   });
 
-  it('3. Exige motivo de pérdida o cancelación cuando el resultado es PERDIDA o CANCELADA', () => {
-    const users = listUsers();
+  it('3. Exige motivo de pérdida o cancelación cuando el resultado es PERDIDA o CANCELADA', async () => {
+    const users = await listUsers();
     const editor = users.find((u) => u.role === 'EDITOR')!;
 
-    const req = createQuoteRequest(editor, {
+    const req = await createQuoteRequest(editor, {
       origin_type: 'OTRO_CLIENTE',
       customer_id: 'cust-audi',
       project_name: 'Maquinado de Bridas Especiales',
@@ -187,16 +187,16 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
       reception_channel: 'Correo electrónico',
     });
 
-    expect(() =>
+    await expect(
       registerCommercialClosure(editor, {
         request_id: req.id,
         result: 'PERDIDA',
         closure_date: '2026-11-13',
         loss_reason: '',
       })
-    ).toThrow(/motivo/i);
+    ).rejects.toThrow(/motivo/i);
 
-    const closedLost = registerCommercialClosure(editor, {
+    const closedLost = await registerCommercialClosure(editor, {
       request_id: req.id,
       result: 'PERDIDA',
       closure_date: '2026-11-13',
@@ -205,19 +205,19 @@ describe('ENTREGA 3 — Seguimiento Comercial, Recordatorios, Notificaciones Int
     });
 
     expect(closedLost.result).toBe('PERDIDA');
-    expect(getQuoteRequestById(req.id)!.request.status).toBe('CERRADA');
+    expect((await getQuoteRequestById(req.id))!.request.status).toBe('CERRADA');
   });
 
-  it('4. Calcula alertas operativas (por vencer, para hoy, vencidas) y despacha notificaciones exclusivamente a correos internos de IN SIDE LOGISTIC', () => {
-    const users = listUsers();
+  it('4. Calcula alertas operativas (por vencer, para hoy, vencidas) y despacha notificaciones exclusivamente a correos internos de IN SIDE LOGISTIC', async () => {
+    const users = await listUsers();
     const admin = users.find((u) => u.role === 'ADMIN')!;
 
-    const alerts = getOperationalAlertsSummary('2026-11-13');
+    const alerts = await getOperationalAlertsSummary('2026-11-13');
     expect(alerts).toHaveProperty('expiringRequests');
     expect(alerts).toHaveProperty('dueTodayFollowUps');
     expect(alerts).toHaveProperty('overdueFollowUps');
 
-    const dispatchResult = dispatchInternalAlertEmails(admin, '2026-11-13');
+    const dispatchResult = await dispatchInternalAlertEmails(admin, '2026-11-13');
     expect(dispatchResult.dispatchedCount).toBeGreaterThanOrEqual(1);
     for (const mail of dispatchResult.emails) {
       expect(mail.to.endsWith('@insidelogistic.com.mx')).toBe(true);

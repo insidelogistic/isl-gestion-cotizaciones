@@ -9,7 +9,7 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ success: false, message: 'No autorizado.' }, { status: 401 });
   }
-  return NextResponse.json({ success: true, customers: listCustomers() });
+  return NextResponse.json({ success: true, customers: await listCustomers() });
 }
 
 export async function POST(request: Request) {
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
   }
   try {
     const body = await request.json();
-    const result = createCustomer(user, body);
+    const result = await createCustomer(user, body);
     return NextResponse.json({ success: true, customer: result }, { status: 201 });
   } catch (err) {
     if (err instanceof PermissionError) {
@@ -49,7 +49,7 @@ export async function DELETE(request: Request) {
     if (!id) {
       return NextResponse.json({ success: false, message: 'ID de cliente requerido.' }, { status: 400 });
     }
-    deleteCustomer(user, id);
+    await deleteCustomer(user, id);
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al eliminar cliente.';

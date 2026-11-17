@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   }
   const { searchParams } = new URL(request.url);
   const customerId = searchParams.get('customer_id') || undefined;
-  return NextResponse.json({ success: true, contacts: listCustomerContacts(customerId) });
+  return NextResponse.json({ success: true, contacts: await listCustomerContacts(customerId) });
 }
 
 export async function POST(request: Request) {
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   }
   try {
     const body = await request.json();
-    const contact = createCustomerContact(user, body);
+    const contact = await createCustomerContact(user, body);
     return NextResponse.json({ success: true, contact }, { status: 201 });
   } catch (err) {
     if (err instanceof PermissionError) {
@@ -55,7 +55,7 @@ export async function DELETE(request: Request) {
     if (!id) {
       return NextResponse.json({ success: false, message: 'ID de contacto requerido.' }, { status: 400 });
     }
-    deleteCustomerContact(user, id);
+    await deleteCustomerContact(user, id);
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al eliminar contacto.';

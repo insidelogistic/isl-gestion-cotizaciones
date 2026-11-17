@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, nowMexicoISO, todayMexicoDate } from '../db';
+import { getAsyncDb, nowMexicoISO, todayMexicoDate } from '../db';
 import { assertPermission } from '../auth/rbac';
 import { generateNextFolio } from './folioService';
 import { getVwCustomer } from './catalogService';
@@ -52,37 +52,40 @@ export function computeDeadlineSemaphore(
   return { semaphore: 'EN_TIEMPO', daysUntil: diffDays };
 }
 
-export function createQuoteRequest(actor: SafeUser, rawInput: unknown): EnrichedQuoteRequest {
+export async function createQuoteRequest(
+  actor: SafeUser,
+  rawInput: unknown
+): Promise<EnrichedQuoteRequest> {
   assertPermission(actor, 'CREATE_REQUEST');
   const parsed = CreateQuoteRequestSchema.parse(rawInput);
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
 
   const receivedYear = Number(parsed.received_date.slice(0, 4)) || 2026;
   const id = `req-${crypto.randomUUID().slice(0, 8)}`;
 
-  // Si es Licitación VW o Solicitud Directa VW, el cliente es automáticamente Volkswagen de México
   let customerId = '';
   let customerName = '';
   if (parsed.origin_type === 'LICITACION_VW' || parsed.origin_type === 'DIRECTA_VW') {
-    const vw = getVwCustomer();
+    const vw = await getVwCustomer();
     customerId = vw.id;
     customerName = vw.name;
   } else {
     customerId = parsed.customer_id;
-    const custRow = db
-      .prepare('SELECT name FROM customers WHERE id = ?')
-      .get(customerId) as { name: string } | undefined;
+    const custRow = await db.get<{ name: string }>(
+      'SELECT name FROM customers WHERE id = ?',
+      customerId
+    );
     if (!custRow) {
       throw new Error('Cliente seleccionado no encontrado en el catálogo.');
     }
     customerName = custRow.name;
   }
 
-  const folio = generateNextFolio(receivedYear, customerName);
+  const folio = await generateNextFolio(receivedYear, customerName);
   const driveFolderPath = `IN SIDE LOGISTIC / COTIZACIONES / ${receivedYear} / ${folio}`;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO quote_requests (
       id, folio, origin_type, customer_id, project_name, description,
       received_date, deadline_date, responsible_user_id, status, observations,
@@ -99,8 +102,7 @@ export function createQuoteRequest(actor: SafeUser, rawInput: unknown): Enriched
       ?, ?, ?, ?,
       NULL, ?,
       ?, ?, ?, ?
-    )`
-  ).run(
+    )`,
     id,
     folio,
     parsed.origin_type,
@@ -136,10 +138,9 @@ export function createQuoteRequest(actor: SafeUser, rawInput: unknown): Enriched
     now
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'SOLICITUD_CREADA', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'SOLICITUD_CREADA', ?, ?, ?)`,
     crypto.randomUUID(),
     id,
     actor.id,
@@ -152,15 +153,18 @@ export function createQuoteRequest(actor: SafeUser, rawInput: unknown): Enriched
     now
   );
 
-  const enriched = listQuoteRequests({}).find((r) => r.id === id);
+  const all = await listQuoteRequests({});
+  const enriched = all.find((r) => r.id === id);
   if (!enriched) {
     throw new Error('Error al recuperar la solicitud recién registrada.');
   }
   return enriched;
 }
 
-export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQuoteRequest[] {
-  const db = getDb();
+export async function listQuoteRequests(
+  filters: RequestFilterOptions = {}
+): Promise<EnrichedQuoteRequest[]> {
+  const db = await getAsyncDb();
   const whereClauses: string[] = ['1 = 1'];
   const params: (string | number)[] = [];
 
@@ -204,7 +208,7 @@ export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQ
 
   const allowedSorts: Record<string, string> = {
     received_date: 'qr.received_date',
-    deadline_date: 'COALESCE(qr.deadline_date, "9999-12-31")',
+    deadline_date: "COALESCE(qr.deadline_date, '9999-12-31')",
     folio: 'qr.folio',
     project_name: 'qr.project_name',
   };
@@ -250,6 +254,7 @@ export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQ
         FROM follow_up_activities fa
         WHERE fa.request_id = qr.id
           AND fa.is_completed = 0
+          AND fa.reminder_cancelled = 0
           AND fa.next_activity_date IS NOT NULL
         ORDER BY fa.next_activity_date ASC
         LIMIT 1
@@ -259,6 +264,7 @@ export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQ
         FROM follow_up_activities fa
         WHERE fa.request_id = qr.id
           AND fa.is_completed = 0
+          AND fa.reminder_cancelled = 0
         ORDER BY COALESCE(fa.next_activity_date, fa.activity_date) ASC
         LIMIT 1
       ) AS next_activity_description,
@@ -267,6 +273,7 @@ export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQ
         FROM follow_up_activities fa
         WHERE fa.request_id = qr.id
           AND fa.is_completed = 0
+          AND fa.reminder_cancelled = 0
         ORDER BY COALESCE(fa.next_activity_date, fa.activity_date) ASC
         LIMIT 1
       ) AS next_activity_type
@@ -277,10 +284,9 @@ export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQ
     ORDER BY ${sortCol} ${sortDir}, qr.created_at DESC
   `;
 
-  const rows = db.prepare(sql).all(...params) as unknown as Omit<
-    EnrichedQuoteRequest,
-    'deadline_semaphore' | 'days_until_deadline'
-  >[];
+  const rows = await db.all<
+    Omit<EnrichedQuoteRequest, 'deadline_semaphore' | 'days_until_deadline'>
+  >(sql, ...params);
 
   return rows.map((r) => {
     const { semaphore, daysUntil } = computeDeadlineSemaphore(r.deadline_date, r.status);
@@ -292,31 +298,35 @@ export function listQuoteRequests(filters: RequestFilterOptions = {}): EnrichedQ
   });
 }
 
-export function updateQuoteRequestStatus(
+export async function updateQuoteRequestStatus(
   actor: SafeUser,
   requestId: string,
   newStatus: RequestStatus,
   comment?: string
-): EnrichedQuoteRequest {
+): Promise<EnrichedQuoteRequest> {
   assertPermission(actor, 'UPDATE_REQUEST');
-  const db = getDb();
-  const existing = db
-    .prepare('SELECT id, folio, status FROM quote_requests WHERE id = ?')
-    .get(requestId) as { id: string; folio: string; status: RequestStatus } | undefined;
+  const db = await getAsyncDb();
+  const existing = await db.get<{ id: string; folio: string; status: RequestStatus }>(
+    'SELECT id, folio, status FROM quote_requests WHERE id = ?',
+    requestId
+  );
 
   if (!existing) {
     throw new Error('Solicitud de cotización no encontrada.');
   }
 
   const now = nowMexicoISO();
-  db.prepare(
-    'UPDATE quote_requests SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?'
-  ).run(newStatus, actor.id, now, requestId);
+  await db.run(
+    'UPDATE quote_requests SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?',
+    newStatus,
+    actor.id,
+    now,
+    requestId
+  );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'CAMBIO_ESTADO_ASISTIDO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'CAMBIO_ESTADO_ASISTIDO', ?, ?, ?)`,
     crypto.randomUUID(),
     requestId,
     actor.id,
@@ -329,14 +339,14 @@ export function updateQuoteRequestStatus(
     now
   );
 
-  const updated = listQuoteRequests({}).find((r) => r.id === requestId);
+  const updated = (await listQuoteRequests({})).find((r) => r.id === requestId);
   if (!updated) {
     throw new Error('No fue posible cargar la solicitud actualizada.');
   }
   return updated;
 }
 
-export function registerQuickFollowUp(
+export async function registerQuickFollowUp(
   actor: SafeUser,
   requestId: string,
   payload: {
@@ -346,19 +356,18 @@ export function registerQuickFollowUp(
     next_activity_date?: string | null;
     next_activity_description?: string | null;
   }
-) {
+): Promise<string> {
   assertPermission(actor, 'MANAGE_FOLLOWUPS');
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
   const id = `act-${crypto.randomUUID().slice(0, 8)}`;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO follow_up_activities (
       id, request_id, activity_type, activity_date, responsible_user_id,
       description, next_activity_date, next_activity_description,
       is_completed, reminder_cancelled, created_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
     id,
     requestId,
     payload.activity_type,
@@ -371,10 +380,9 @@ export function registerQuickFollowUp(
     now
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'SEGUIMIENTO_REGISTRADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'SEGUIMIENTO_REGISTRADO', ?, ?, ?)`,
     crypto.randomUUID(),
     requestId,
     actor.id,
@@ -389,7 +397,7 @@ export function registerQuickFollowUp(
   return id;
 }
 
-export function updateQuoteRequestDetails(
+export async function updateQuoteRequestDetails(
   actor: SafeUser,
   requestId: string,
   payload: {
@@ -408,12 +416,13 @@ export function updateQuoteRequestDetails(
     has_lastenheft?: boolean;
     has_economic_excel?: boolean;
   }
-): EnrichedQuoteRequest {
+): Promise<EnrichedQuoteRequest> {
   assertPermission(actor, 'UPDATE_REQUEST');
-  const db = getDb();
-  const existing = db
-    .prepare('SELECT * FROM quote_requests WHERE id = ?')
-    .get(requestId) as Record<string, unknown> | undefined;
+  const db = await getAsyncDb();
+  const existing = await db.get<Record<string, unknown>>(
+    'SELECT * FROM quote_requests WHERE id = ?',
+    requestId
+  );
 
   if (!existing) {
     throw new Error('Solicitud de cotización no encontrada.');
@@ -474,7 +483,7 @@ export function updateQuoteRequestDetails(
         : 0
       : Number(existing.has_economic_excel);
 
-  db.prepare(
+  await db.run(
     `UPDATE quote_requests
      SET project_name = ?,
          description = ?,
@@ -492,8 +501,7 @@ export function updateQuoteRequestDetails(
          has_economic_excel = ?,
          updated_by = ?,
          updated_at = ?
-     WHERE id = ?`
-  ).run(
+     WHERE id = ?`,
     projectName,
     description,
     deadlineDate,
@@ -513,10 +521,9 @@ export function updateQuoteRequestDetails(
     requestId
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'EXPEDIENTE_ACTUALIZADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'EXPEDIENTE_ACTUALIZADO', ?, ?, ?)`,
     crypto.randomUUID(),
     requestId,
     actor.id,
@@ -529,50 +536,44 @@ export function updateQuoteRequestDetails(
     now
   );
 
-  const updated = listQuoteRequests({}).find((r) => r.id === requestId);
+  const updated = (await listQuoteRequests({})).find((r) => r.id === requestId);
   if (!updated) {
     throw new Error('No fue posible cargar el expediente actualizado.');
   }
   return updated;
 }
 
-export function getQuoteRequestById(requestIdOrFolio: string) {
-  const db = getDb();
-  const all = listQuoteRequests({});
+export async function getQuoteRequestById(requestIdOrFolio: string) {
+  const db = await getAsyncDb();
+  const all = await listQuoteRequests({});
   const request = all.find(
     (r) => r.id === requestIdOrFolio || r.folio.toUpperCase() === requestIdOrFolio.toUpperCase()
   );
   if (!request) return null;
 
-  const revisions = listQuoteRevisions(request.id);
+  const revisions = await listQuoteRevisions(request.id);
 
-  const activities = (
-    db
-      .prepare(
-        `SELECT fa.*, u.name as responsible_name
-         FROM follow_up_activities fa
-         JOIN users u ON u.id = fa.responsible_user_id
-         WHERE fa.request_id = ?
-         ORDER BY fa.activity_date DESC, fa.created_at DESC`
-      )
-      .all(request.id) as Array<Record<string, unknown>>
-  ).map((a) => ({ ...a }));
+  const activities = await db.all<Record<string, unknown>>(
+    `SELECT fa.*, u.name as responsible_name
+     FROM follow_up_activities fa
+     JOIN users u ON u.id = fa.responsible_user_id
+     WHERE fa.request_id = ?
+     ORDER BY fa.activity_date DESC, fa.created_at DESC`,
+    request.id
+  );
 
-  const documents = listExpedienteDocuments(request.id);
+  const documents = await listExpedienteDocuments(request.id);
 
-  const closure = getCommercialClosureByRequestId(request.id) || undefined;
+  const closure = (await getCommercialClosureByRequestId(request.id)) || undefined;
 
-  const auditLogs = (
-    db
-      .prepare(
-        `SELECT al.*, u.name as actor_name
-         FROM audit_logs al
-         JOIN users u ON u.id = al.actor_user_id
-         WHERE al.entity_id = ?
-         ORDER BY al.created_at DESC`
-      )
-      .all(request.id) as unknown as AuditLogRecord[]
-  ).map((l) => ({ ...l }));
+  const auditLogs = await db.all<AuditLogRecord>(
+    `SELECT al.*, u.name as actor_name
+     FROM audit_logs al
+     JOIN users u ON u.id = al.actor_user_id
+     WHERE al.entity_id = ?
+     ORDER BY al.created_at DESC`,
+    request.id
+  );
 
   return {
     request,
@@ -584,43 +585,41 @@ export function getQuoteRequestById(requestIdOrFolio: string) {
   };
 }
 
-export function deleteQuoteRequest(actor: SafeUser, requestId: string): void {
+export async function deleteQuoteRequest(actor: SafeUser, requestId: string): Promise<void> {
   if (actor.role !== 'ADMIN') {
-    throw new Error('Acceso denegado: Solo el Administrador puede eliminar solicitudes o cotizaciones.');
+    throw new Error(
+      'Acceso denegado: Solo el Administrador puede eliminar solicitudes o cotizaciones.'
+    );
   }
-  const db = getDb();
-  const existing = db
-    .prepare('SELECT id, folio, project_name FROM quote_requests WHERE id = ?')
-    .get(requestId) as { id: string; folio: string; project_name: string } | undefined;
+  const db = await getAsyncDb();
+  const existing = await db.get<{ id: string; folio: string; project_name: string }>(
+    'SELECT id, folio, project_name FROM quote_requests WHERE id = ?',
+    requestId
+  );
 
   if (!existing) {
     throw new Error('Expediente o cotización no encontrado.');
   }
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    db.prepare('DELETE FROM commercial_closures WHERE request_id = ?').run(requestId);
-    db.prepare('DELETE FROM follow_up_activities WHERE request_id = ?').run(requestId);
-    db.prepare('DELETE FROM documents WHERE request_id = ?').run(requestId);
-    db.prepare(
-      'DELETE FROM quote_items WHERE revision_id IN (SELECT id FROM quote_revisions WHERE request_id = ?)'
-    ).run(requestId);
-    db.prepare('DELETE FROM quote_revisions WHERE request_id = ?').run(requestId);
-    db.prepare('DELETE FROM quote_requests WHERE id = ?').run(requestId);
+  await db.transaction(async (tx) => {
+    await tx.run('DELETE FROM commercial_closures WHERE request_id = ?', requestId);
+    await tx.run('DELETE FROM follow_up_activities WHERE request_id = ?', requestId);
+    await tx.run('DELETE FROM documents WHERE request_id = ?', requestId);
+    await tx.run(
+      'DELETE FROM quote_items WHERE revision_id IN (SELECT id FROM quote_revisions WHERE request_id = ?)',
+      requestId
+    );
+    await tx.run('DELETE FROM quote_revisions WHERE request_id = ?', requestId);
+    await tx.run('DELETE FROM quote_requests WHERE id = ?', requestId);
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-       VALUES (?, 'QUOTE_REQUEST', ?, 'EXPEDIENTE_ELIMINADO', ?, ?, ?)`
-    ).run(
+       VALUES (?, 'QUOTE_REQUEST', ?, 'EXPEDIENTE_ELIMINADO', ?, ?, ?)`,
       crypto.randomUUID(),
       requestId,
       actor.id,
       JSON.stringify({ folio: existing.folio, project_name: existing.project_name }),
       nowMexicoISO()
     );
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 }

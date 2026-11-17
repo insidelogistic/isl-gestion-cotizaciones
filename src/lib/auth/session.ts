@@ -6,7 +6,11 @@ import type { SafeUser } from '../db/types';
 export const SESSION_COOKIE_NAME = 'isl_cot_session';
 
 function getSecret(): string {
-  return process.env.SESSION_SECRET || 'isl-cotizaciones-secret-key-change-in-production-2026';
+  return (
+    process.env.AUTH_SECRET ||
+    process.env.SESSION_SECRET ||
+    'isl-cotizaciones-secret-key-change-in-production-2026'
+  );
 }
 
 export function createSessionToken(userId: string): string {
@@ -37,7 +41,7 @@ export async function getSessionUser(): Promise<SafeUser | null> {
     if (token) {
       const userId = verifySessionToken(token);
       if (userId) {
-        const user = getUserByEmployeeCodeOrId(userId);
+        const user = await getUserByEmployeeCodeOrId(userId);
         if (user) return user;
       }
     }

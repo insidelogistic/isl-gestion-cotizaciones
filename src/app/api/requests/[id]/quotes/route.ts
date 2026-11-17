@@ -12,7 +12,7 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const revisions = listQuoteRevisions(id);
+  const revisions = await listQuoteRevisions(id);
   return NextResponse.json({ success: true, revisions });
 }
 
@@ -28,7 +28,7 @@ export async function POST(
 
     const { id } = await context.params;
     const body = await request.json();
-    const created = createQuoteRevision(user, {
+    const created = await createQuoteRevision(user, {
       request_id: id,
       modality: body.modality,
       currency: body.currency || 'MXN',

@@ -16,7 +16,7 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const detail = getQuoteRequestById(id);
+  const detail = await getQuoteRequestById(id);
   if (!detail) {
     return NextResponse.json({ success: false, message: 'Expediente no encontrado.' }, { status: 404 });
   }
@@ -36,7 +36,7 @@ export async function PATCH(
 
     const { id } = await context.params;
     const body = await request.json();
-    const updated = updateQuoteRequestDetails(user, id, body);
+    const updated = await updateQuoteRequestDetails(user, id, body);
     return NextResponse.json({ success: true, request: updated });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al actualizar el expediente.';
@@ -56,7 +56,7 @@ export async function DELETE(
     }
 
     const { id } = await context.params;
-    deleteQuoteRequest(user, id);
+    await deleteQuoteRequest(user, id);
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al eliminar el expediente.';

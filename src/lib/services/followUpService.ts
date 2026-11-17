@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, nowMexicoISO, todayMexicoDate } from '../db';
+import { getAsyncDb, nowMexicoISO, todayMexicoDate } from '../db';
 import { assertPermission } from '../auth/rbac';
 import type { SafeUser } from '../db/types';
 
@@ -49,7 +49,7 @@ export function computeCommitmentUrgency(
   return 'PROXIMO';
 }
 
-export function registerFollowUpActivity(
+export async function registerFollowUpActivity(
   actor: SafeUser,
   input: {
     request_id: string;
@@ -61,16 +61,17 @@ export function registerFollowUpActivity(
     next_activity_description?: string | null;
     associated_document_id?: string | null;
   }
-): FollowUpActivityRecord {
+): Promise<FollowUpActivityRecord> {
   assertPermission(actor, 'MANAGE_FOLLOWUPS');
   if (!input.description || input.description.trim().length < 3) {
     throw new Error('La descripción de la actividad de seguimiento es obligatoria.');
   }
 
-  const db = getDb();
-  const reqRow = db
-    .prepare('SELECT id, folio, status FROM quote_requests WHERE id = ?')
-    .get(input.request_id) as { id: string; folio: string; status: string } | undefined;
+  const db = await getAsyncDb();
+  const reqRow = await db.get<{ id: string; folio: string; status: string }>(
+    'SELECT id, folio, status FROM quote_requests WHERE id = ?',
+    input.request_id
+  );
 
   if (!reqRow) {
     throw new Error('Expediente de solicitud no encontrado.');
@@ -80,13 +81,12 @@ export function registerFollowUpActivity(
   const now = nowMexicoISO();
   const responsibleId = input.responsible_user_id || actor.id;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO follow_up_activities (
       id, request_id, activity_type, activity_date, responsible_user_id,
       description, next_activity_date, next_activity_description,
       is_completed, reminder_cancelled, created_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
     id,
     input.request_id,
     input.activity_type,
@@ -100,17 +100,17 @@ export function registerFollowUpActivity(
   );
 
   if (input.associated_document_id) {
-    db.prepare('UPDATE documents SET activity_id = ? WHERE id = ? AND request_id = ?').run(
+    await db.run(
+      'UPDATE documents SET activity_id = ? WHERE id = ? AND request_id = ?',
       id,
       input.associated_document_id,
       input.request_id
     );
   }
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'SEGUIMIENTO_REGISTRADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'SEGUIMIENTO_REGISTRADO', ?, ?, ?)`,
     crypto.randomUUID(),
     input.request_id,
     actor.id,
@@ -123,27 +123,28 @@ export function registerFollowUpActivity(
     now
   );
 
-  return getFollowUpActivityById(id)!;
+  return (await getFollowUpActivityById(id))!;
 }
 
-export function getFollowUpActivityById(activityId: string): FollowUpActivityRecord | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT
-        fa.*,
-        qr.folio,
-        qr.project_name,
-        qr.status AS request_status,
-        c.short_name AS customer_short_name,
-        u.name AS responsible_name
-       FROM follow_up_activities fa
-       JOIN quote_requests qr ON qr.id = fa.request_id
-       JOIN customers c ON c.id = qr.customer_id
-       JOIN users u ON u.id = fa.responsible_user_id
-       WHERE fa.id = ?`
-    )
-    .get(activityId) as unknown as FollowUpActivityRecord | undefined;
+export async function getFollowUpActivityById(
+  activityId: string
+): Promise<FollowUpActivityRecord | null> {
+  const db = await getAsyncDb();
+  const row = await db.get<FollowUpActivityRecord>(
+    `SELECT
+      fa.*,
+      qr.folio,
+      qr.project_name,
+      qr.status AS request_status,
+      c.short_name AS customer_short_name,
+      u.name AS responsible_name
+     FROM follow_up_activities fa
+     JOIN quote_requests qr ON qr.id = fa.request_id
+     JOIN customers c ON c.id = qr.customer_id
+     JOIN users u ON u.id = fa.responsible_user_id
+     WHERE fa.id = ?`,
+    activityId
+  );
 
   if (!row) return null;
   return {
@@ -156,14 +157,14 @@ export function getFollowUpActivityById(activityId: string): FollowUpActivityRec
   };
 }
 
-export function completeFollowUpActivity(
+export async function completeFollowUpActivity(
   actor: SafeUser,
   activityId: string,
   resolutionComment?: string
-): FollowUpActivityRecord {
+): Promise<FollowUpActivityRecord> {
   assertPermission(actor, 'MANAGE_FOLLOWUPS');
-  const db = getDb();
-  const existing = getFollowUpActivityById(activityId);
+  const db = await getAsyncDb();
+  const existing = await getFollowUpActivityById(activityId);
   if (!existing) {
     throw new Error('Actividad de seguimiento no encontrada.');
   }
@@ -173,16 +174,17 @@ export function completeFollowUpActivity(
     ? `${existing.description} [Completado: ${resolutionComment.trim()}]`
     : existing.description;
 
-  db.prepare(
+  await db.run(
     `UPDATE follow_up_activities
      SET is_completed = 1, description = ?
-     WHERE id = ?`
-  ).run(updatedDesc, activityId);
+     WHERE id = ?`,
+    updatedDesc,
+    activityId
+  );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'SEGUIMIENTO_COMPLETADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'SEGUIMIENTO_COMPLETADO', ?, ?, ?)`,
     crypto.randomUUID(),
     existing.request_id,
     actor.id,
@@ -190,36 +192,38 @@ export function completeFollowUpActivity(
     now
   );
 
-  return getFollowUpActivityById(activityId)!;
+  return (await getFollowUpActivityById(activityId))!;
 }
 
-export function rescheduleFollowUpActivity(
+export async function rescheduleFollowUpActivity(
   actor: SafeUser,
   activityId: string,
   newNextActivityDate: string,
   newNextActivityDescription?: string
-): FollowUpActivityRecord {
+): Promise<FollowUpActivityRecord> {
   assertPermission(actor, 'MANAGE_FOLLOWUPS');
-  const db = getDb();
-  const existing = getFollowUpActivityById(activityId);
+  const db = await getAsyncDb();
+  const existing = await getFollowUpActivityById(activityId);
   if (!existing) {
     throw new Error('Actividad de seguimiento no encontrada.');
   }
 
   const now = nowMexicoISO();
-  db.prepare(
+  await db.run(
     `UPDATE follow_up_activities
      SET next_activity_date = ?,
          next_activity_description = COALESCE(?, next_activity_description),
          is_completed = 0,
          reminder_cancelled = 0
-     WHERE id = ?`
-  ).run(newNextActivityDate, newNextActivityDescription?.trim() || null, activityId);
+     WHERE id = ?`,
+    newNextActivityDate,
+    newNextActivityDescription?.trim() || null,
+    activityId
+  );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'RECORDATORIO_REPROGRAMADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'RECORDATORIO_REPROGRAMADO', ?, ?, ?)`,
     crypto.randomUUID(),
     existing.request_id,
     actor.id,
@@ -231,31 +235,31 @@ export function rescheduleFollowUpActivity(
     now
   );
 
-  return getFollowUpActivityById(activityId)!;
+  return (await getFollowUpActivityById(activityId))!;
 }
 
-export function cancelFollowUpReminder(
+export async function cancelFollowUpReminder(
   actor: SafeUser,
   activityId: string
-): FollowUpActivityRecord {
+): Promise<FollowUpActivityRecord> {
   assertPermission(actor, 'MANAGE_FOLLOWUPS');
-  const db = getDb();
-  const existing = getFollowUpActivityById(activityId);
+  const db = await getAsyncDb();
+  const existing = await getFollowUpActivityById(activityId);
   if (!existing) {
     throw new Error('Actividad de seguimiento no encontrada.');
   }
 
   const now = nowMexicoISO();
-  db.prepare(
+  await db.run(
     `UPDATE follow_up_activities
      SET reminder_cancelled = 1
-     WHERE id = ?`
-  ).run(activityId);
+     WHERE id = ?`,
+    activityId
+  );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'RECORDATORIO_CANCELADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'RECORDATORIO_CANCELADO', ?, ?, ?)`,
     crypto.randomUUID(),
     existing.request_id,
     actor.id,
@@ -263,16 +267,16 @@ export function cancelFollowUpReminder(
     now
   );
 
-  return getFollowUpActivityById(activityId)!;
+  return (await getFollowUpActivityById(activityId))!;
 }
 
-export function listFollowUpCommitments(options?: {
+export async function listFollowUpCommitments(options?: {
   requestId?: string;
   responsibleUserId?: string;
   onlyPending?: boolean;
   referenceDateStr?: string;
-}): FollowUpActivityRecord[] {
-  const db = getDb();
+}): Promise<FollowUpActivityRecord[]> {
+  const db = await getAsyncDb();
   const where: string[] = ['1 = 1'];
   const params: (string | number)[] = [];
 
@@ -285,26 +289,27 @@ export function listFollowUpCommitments(options?: {
     params.push(options.responsibleUserId);
   }
   if (options?.onlyPending) {
-    where.push('fa.is_completed = 0 AND fa.reminder_cancelled = 0 AND fa.next_activity_date IS NOT NULL');
+    where.push(
+      'fa.is_completed = 0 AND fa.reminder_cancelled = 0 AND fa.next_activity_date IS NOT NULL'
+    );
   }
 
-  const rows = db
-    .prepare(
-      `SELECT
-        fa.*,
-        qr.folio,
-        qr.project_name,
-        qr.status AS request_status,
-        c.short_name AS customer_short_name,
-        u.name AS responsible_name
-       FROM follow_up_activities fa
-       JOIN quote_requests qr ON qr.id = fa.request_id
-       JOIN customers c ON c.id = qr.customer_id
-       JOIN users u ON u.id = fa.responsible_user_id
-       WHERE ${where.join(' AND ')}
-       ORDER BY COALESCE(fa.next_activity_date, fa.activity_date) ASC, fa.created_at DESC`
-    )
-    .all(...params) as unknown as FollowUpActivityRecord[];
+  const rows = await db.all<FollowUpActivityRecord>(
+    `SELECT
+      fa.*,
+      qr.folio,
+      qr.project_name,
+      qr.status AS request_status,
+      c.short_name AS customer_short_name,
+      u.name AS responsible_name
+     FROM follow_up_activities fa
+     JOIN quote_requests qr ON qr.id = fa.request_id
+     JOIN customers c ON c.id = qr.customer_id
+     JOIN users u ON u.id = fa.responsible_user_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY COALESCE(fa.next_activity_date, fa.activity_date) ASC, fa.created_at DESC`,
+    ...params
+  );
 
   return rows.map((r) => ({
     ...r,

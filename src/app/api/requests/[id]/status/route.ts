@@ -16,7 +16,7 @@ export async function PATCH(
   try {
     const { id } = await context.params;
     const body = (await request.json()) as { status: RequestStatus; comment?: string };
-    const updated = updateQuoteRequestStatus(user, id, body.status, body.comment);
+    const updated = await updateQuoteRequestStatus(user, id, body.status, body.comment);
     return NextResponse.json({ success: true, request: updated });
   } catch (err) {
     if (err instanceof PermissionError) {

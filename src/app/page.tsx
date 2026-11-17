@@ -24,15 +24,15 @@ export default async function DashboardPage({
   }
 
   const sp = await searchParams;
-  const metrics = getDashboardMetrics({
+  const metrics = await getDashboardMetrics({
     dateFrom: sp.dateFrom,
     dateTo: sp.dateTo,
     customerId: sp.customerId,
     responsibleUserId: sp.responsibleUserId,
   });
 
-  const customers = listCustomers();
-  const users = listUsers();
+  const customers = await listCustomers();
+  const users = await listUsers();
 
   return (
     <AppShell

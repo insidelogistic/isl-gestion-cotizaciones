@@ -19,9 +19,9 @@ export default async function SolicitudesPage({
   }
 
   const sp = await searchParams;
-  const requests = listQuoteRequests({});
-  const customers = listCustomers();
-  const users = listUsers();
+  const requests = await listQuoteRequests({});
+  const customers = await listCustomers();
+  const users = await listUsers();
   const urgentCount = requests.filter(
     (r) => r.deadline_semaphore === 'POR_VENCER' || r.deadline_semaphore === 'VENCIDA'
   ).length;

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, nowMexicoISO } from '../db';
+import { getAsyncDb, nowMexicoISO } from '../db';
 import { hashPassword } from '../db/seed';
 import { assertPermission, toSafeUser } from '../auth/rbac';
 import { CreateContactSchema, CreateCustomerSchema, CreateUserSchema } from '../validation/schemas';
@@ -10,30 +10,27 @@ import type {
   UserRecord,
 } from '../db/types';
 
-export function listCustomers(): CustomerRecord[] {
-  const db = getDb();
-  const rows = db
-    .prepare('SELECT * FROM customers ORDER BY is_vw DESC, name ASC')
-    .all() as unknown as CustomerRecord[];
-  return rows.map((r) => ({ ...r }));
+export async function listCustomers(): Promise<CustomerRecord[]> {
+  const db = await getAsyncDb();
+  return db.all<CustomerRecord>('SELECT * FROM customers ORDER BY is_vw DESC, name ASC');
 }
 
-export function getVwCustomer(): CustomerRecord {
-  const db = getDb();
-  const vw = db.prepare('SELECT * FROM customers WHERE is_vw = 1 LIMIT 1').get() as CustomerRecord | undefined;
+export async function getVwCustomer(): Promise<CustomerRecord> {
+  const db = await getAsyncDb();
+  const vw = await db.get<CustomerRecord>('SELECT * FROM customers WHERE is_vw = 1 LIMIT 1');
   if (!vw) {
     throw new Error('Cliente Volkswagen de México no encontrado en catálogo.');
   }
-  return { ...vw };
+  return vw;
 }
 
-export function createCustomer(
+export async function createCustomer(
   actor: SafeUser,
   rawInput: unknown
-): CustomerRecord & { initialContact?: CustomerContactRecord } {
+): Promise<CustomerRecord & { initialContact?: CustomerContactRecord }> {
   assertPermission(actor, 'MANAGE_CATALOGS');
   const parsed = CreateCustomerSchema.parse(rawInput);
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
   const id = `cust-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -48,10 +45,9 @@ export function createCustomer(
           .toUpperCase()
           .slice(0, 14);
 
-  db.prepare(
+  await db.run(
     `INSERT INTO customers (id, name, short_name, rfc, plant_or_location, address, is_vw, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
     id,
     parsed.name,
     shortName,
@@ -63,16 +59,24 @@ export function createCustomer(
     now
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'CUSTOMER', ?, 'CLIENTE_REGISTRADO', ?, ?, ?)`
-  ).run(crypto.randomUUID(), id, actor.id, JSON.stringify({ name: parsed.name, short_name: shortName }), now);
+     VALUES (?, 'CUSTOMER', ?, 'CLIENTE_REGISTRADO', ?, ?, ?)`,
+    crypto.randomUUID(),
+    id,
+    actor.id,
+    JSON.stringify({ name: parsed.name, short_name: shortName }),
+    now
+  );
 
-  const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as unknown as CustomerRecord;
+  const customer = await db.get<CustomerRecord>('SELECT * FROM customers WHERE id = ?', id);
+  if (!customer) {
+    throw new Error('Error al recuperar el cliente registrado.');
+  }
 
   let initialContact: CustomerContactRecord | undefined;
   if (parsed.contact_name && parsed.contact_name.trim().length >= 2) {
-    initialContact = createCustomerContact(actor, {
+    initialContact = await createCustomerContact(actor, {
       customer_id: id,
       name: parsed.contact_name,
       position: parsed.contact_position || null,
@@ -85,42 +89,39 @@ export function createCustomer(
   return { ...customer, initialContact };
 }
 
-export function listCustomerContacts(customerId?: string): CustomerContactRecord[] {
-  const db = getDb();
+export async function listCustomerContacts(customerId?: string): Promise<CustomerContactRecord[]> {
+  const db = await getAsyncDb();
   if (customerId) {
-    const rows = db
-      .prepare(
-        `SELECT cc.*, c.name as customer_name, c.short_name as customer_short_name
-         FROM customer_contacts cc
-         JOIN customers c ON c.id = cc.customer_id
-         WHERE cc.customer_id = ?
-         ORDER BY cc.name ASC`
-      )
-      .all(customerId) as unknown as CustomerContactRecord[];
-    return rows.map((r) => ({ ...r }));
-  }
-  const rows = db
-    .prepare(
+    return db.all<CustomerContactRecord>(
       `SELECT cc.*, c.name as customer_name, c.short_name as customer_short_name
        FROM customer_contacts cc
        JOIN customers c ON c.id = cc.customer_id
-       ORDER BY c.is_vw DESC, cc.name ASC`
-    )
-    .all() as unknown as CustomerContactRecord[];
-  return rows.map((r) => ({ ...r }));
+       WHERE cc.customer_id = ?
+       ORDER BY cc.name ASC`,
+      customerId
+    );
+  }
+  return db.all<CustomerContactRecord>(
+    `SELECT cc.*, c.name as customer_name, c.short_name as customer_short_name
+     FROM customer_contacts cc
+     JOIN customers c ON c.id = cc.customer_id
+     ORDER BY c.is_vw DESC, cc.name ASC`
+  );
 }
 
-export function createCustomerContact(actor: SafeUser, rawInput: unknown): CustomerContactRecord {
+export async function createCustomerContact(
+  actor: SafeUser,
+  rawInput: unknown
+): Promise<CustomerContactRecord> {
   assertPermission(actor, 'MANAGE_CATALOGS');
   const parsed = CreateContactSchema.parse(rawInput);
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
   const id = `cnt-${crypto.randomUUID().slice(0, 8)}`;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO customer_contacts (id, customer_id, name, position, department, email, phone, contact_type, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     parsed.customer_id,
     parsed.name,
@@ -133,35 +134,35 @@ export function createCustomerContact(actor: SafeUser, rawInput: unknown): Custo
     now
   );
 
-  return db
-    .prepare(
-      `SELECT cc.*, c.name as customer_name, c.short_name as customer_short_name
-       FROM customer_contacts cc
-       JOIN customers c ON c.id = cc.customer_id
-       WHERE cc.id = ?`
-    )
-    .get(id) as unknown as CustomerContactRecord;
+  const created = await db.get<CustomerContactRecord>(
+    `SELECT cc.*, c.name as customer_name, c.short_name as customer_short_name
+     FROM customer_contacts cc
+     JOIN customers c ON c.id = cc.customer_id
+     WHERE cc.id = ?`,
+    id
+  );
+  if (!created) {
+    throw new Error('Error al recuperar el contacto registrado.');
+  }
+  return created;
 }
 
-export function listUsers(): SafeUser[] {
-  const db = getDb();
-  const rows = db
-    .prepare('SELECT * FROM users ORDER BY role ASC, name ASC')
-    .all() as unknown as UserRecord[];
+export async function listUsers(): Promise<SafeUser[]> {
+  const db = await getAsyncDb();
+  const rows = await db.all<UserRecord>('SELECT * FROM users ORDER BY role ASC, name ASC');
   return rows.map(toSafeUser);
 }
 
-export function createUser(actor: SafeUser, rawInput: unknown): SafeUser {
+export async function createUser(actor: SafeUser, rawInput: unknown): Promise<SafeUser> {
   assertPermission(actor, 'MANAGE_USERS');
   const parsed = CreateUserSchema.parse(rawInput);
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
   const id = `usr-${crypto.randomUUID().slice(0, 8)}`;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO users (id, employee_code, name, email, password_hash, role, department, is_active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     id,
     parsed.employee_code.toUpperCase(),
     parsed.name,
@@ -173,10 +174,9 @@ export function createUser(actor: SafeUser, rawInput: unknown): SafeUser {
     now
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'USER', ?, 'USUARIO_CREADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'USER', ?, 'USUARIO_CREADO', ?, ?, ?)`,
     crypto.randomUUID(),
     id,
     actor.id,
@@ -184,40 +184,44 @@ export function createUser(actor: SafeUser, rawInput: unknown): SafeUser {
     now
   );
 
-  const created = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as unknown as UserRecord;
+  const created = await db.get<UserRecord>('SELECT * FROM users WHERE id = ?', id);
+  if (!created) {
+    throw new Error('Error al recuperar el usuario creado.');
+  }
   return toSafeUser(created);
 }
 
-export function deleteCustomer(actor: SafeUser, customerId: string): void {
+export async function deleteCustomer(actor: SafeUser, customerId: string): Promise<void> {
   if (actor.role !== 'ADMIN') {
     throw new Error('Acceso denegado: Solo el Administrador puede eliminar clientes.');
   }
-  const db = getDb();
-  const existing = db
-    .prepare('SELECT id, name, short_name FROM customers WHERE id = ?')
-    .get(customerId) as { id: string; name: string; short_name: string } | undefined;
+  const db = await getAsyncDb();
+  const existing = await db.get<{ id: string; name: string; short_name: string }>(
+    'SELECT id, name, short_name FROM customers WHERE id = ?',
+    customerId
+  );
 
   if (!existing) {
     throw new Error('Cliente no encontrado.');
   }
 
-  const linkedCount = db
-    .prepare('SELECT COUNT(*) as cnt FROM quote_requests WHERE customer_id = ?')
-    .get(customerId) as { cnt: number };
+  const linkedCount = await db.get<{ cnt: number }>(
+    'SELECT COUNT(*) as cnt FROM quote_requests WHERE customer_id = ?',
+    customerId
+  );
 
-  if (linkedCount.cnt > 0) {
+  if (linkedCount && Number(linkedCount.cnt) > 0) {
     throw new Error(
       `No se puede eliminar al cliente "${existing.short_name}" porque tiene ${linkedCount.cnt} solicitud(es)/cotización(es) asociada(s). Elimine primero sus cotizaciones.`
     );
   }
 
-  db.prepare('DELETE FROM customer_contacts WHERE customer_id = ?').run(customerId);
-  db.prepare('DELETE FROM customers WHERE id = ?').run(customerId);
+  await db.run('DELETE FROM customer_contacts WHERE customer_id = ?', customerId);
+  await db.run('DELETE FROM customers WHERE id = ?', customerId);
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'CUSTOMER', ?, 'CLIENTE_ELIMINADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'CUSTOMER', ?, 'CLIENTE_ELIMINADO', ?, ?, ?)`,
     crypto.randomUUID(),
     customerId,
     actor.id,
@@ -226,26 +230,26 @@ export function deleteCustomer(actor: SafeUser, customerId: string): void {
   );
 }
 
-export function deleteCustomerContact(actor: SafeUser, contactId: string): void {
+export async function deleteCustomerContact(actor: SafeUser, contactId: string): Promise<void> {
   if (actor.role !== 'ADMIN') {
     throw new Error('Acceso denegado: Solo el Administrador puede eliminar contactos.');
   }
-  const db = getDb();
-  const existing = db
-    .prepare('SELECT id, name FROM customer_contacts WHERE id = ?')
-    .get(contactId) as { id: string; name: string } | undefined;
+  const db = await getAsyncDb();
+  const existing = await db.get<{ id: string; name: string }>(
+    'SELECT id, name FROM customer_contacts WHERE id = ?',
+    contactId
+  );
 
   if (!existing) {
     throw new Error('Contacto no encontrado.');
   }
 
-  db.prepare('UPDATE quote_requests SET contact_id = NULL WHERE contact_id = ?').run(contactId);
-  db.prepare('DELETE FROM customer_contacts WHERE id = ?').run(contactId);
+  await db.run('UPDATE quote_requests SET contact_id = NULL WHERE contact_id = ?', contactId);
+  await db.run('DELETE FROM customer_contacts WHERE id = ?', contactId);
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'CONTACT', ?, 'CONTACTO_ELIMINADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'CONTACT', ?, 'CONTACTO_ELIMINADO', ?, ?, ?)`,
     crypto.randomUUID(),
     contactId,
     actor.id,
@@ -254,7 +258,7 @@ export function deleteCustomerContact(actor: SafeUser, contactId: string): void 
   );
 }
 
-export function deleteUser(actor: SafeUser, userId: string): void {
+export async function deleteUser(actor: SafeUser, userId: string): Promise<void> {
   if (actor.role !== 'ADMIN') {
     throw new Error('Acceso denegado: Solo el Administrador puede eliminar usuarios.');
   }
@@ -262,50 +266,48 @@ export function deleteUser(actor: SafeUser, userId: string): void {
     throw new Error('No puedes eliminar tu propio usuario Administrador con sesión activa.');
   }
 
-  const db = getDb();
-  const existing = db
-    .prepare('SELECT id, employee_code, name, email FROM users WHERE id = ?')
-    .get(userId) as { id: string; employee_code: string; name: string; email: string } | undefined;
+  const db = await getAsyncDb();
+  const existing = await db.get<{ id: string; employee_code: string; name: string; email: string }>(
+    'SELECT id, employee_code, name, email FROM users WHERE id = ?',
+    userId
+  );
 
   if (!existing) {
     throw new Error('Usuario no encontrado.');
   }
 
-  // Reasignar referencias de auditoría/solicitudes al administrador actual antes de borrar para respetar llaves foráneas
-  db.prepare('UPDATE quote_requests SET responsible_user_id = ? WHERE responsible_user_id = ?').run(
+  await db.run(
+    'UPDATE quote_requests SET responsible_user_id = ? WHERE responsible_user_id = ?',
     actor.id,
     userId
   );
-  db.prepare('UPDATE quote_requests SET created_by = ? WHERE created_by = ?').run(actor.id, userId);
-  db.prepare('UPDATE quote_requests SET updated_by = ? WHERE updated_by = ?').run(actor.id, userId);
-  db.prepare('UPDATE quote_revisions SET created_by = ? WHERE created_by = ?').run(actor.id, userId);
-  db.prepare('UPDATE quote_revisions SET presented_by = ? WHERE presented_by = ?').run(
+  await db.run('UPDATE quote_requests SET created_by = ? WHERE created_by = ?', actor.id, userId);
+  await db.run('UPDATE quote_requests SET updated_by = ? WHERE updated_by = ?', actor.id, userId);
+  await db.run('UPDATE quote_revisions SET created_by = ? WHERE created_by = ?', actor.id, userId);
+  await db.run(
+    'UPDATE quote_revisions SET presented_by = ? WHERE presented_by = ?',
     actor.id,
     userId
   );
-  db.prepare('UPDATE documents SET uploaded_by = ? WHERE uploaded_by = ?').run(actor.id, userId);
-  db.prepare(
-    'UPDATE follow_up_activities SET responsible_user_id = ? WHERE responsible_user_id = ?'
-  ).run(actor.id, userId);
-  db.prepare('UPDATE follow_up_activities SET created_by = ? WHERE created_by = ?').run(
+  await db.run('UPDATE documents SET uploaded_by = ? WHERE uploaded_by = ?', actor.id, userId);
+  await db.run(
+    'UPDATE follow_up_activities SET responsible_user_id = ? WHERE responsible_user_id = ?',
     actor.id,
     userId
   );
-  db.prepare('UPDATE commercial_closures SET closed_by = ? WHERE closed_by = ?').run(
+  await db.run(
+    'UPDATE follow_up_activities SET created_by = ? WHERE created_by = ?',
     actor.id,
     userId
   );
-  db.prepare('UPDATE audit_logs SET actor_user_id = ? WHERE actor_user_id = ?').run(
-    actor.id,
-    userId
-  );
+  await db.run('UPDATE commercial_closures SET closed_by = ? WHERE closed_by = ?', actor.id, userId);
+  await db.run('UPDATE audit_logs SET actor_user_id = ? WHERE actor_user_id = ?', actor.id, userId);
 
-  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  await db.run('DELETE FROM users WHERE id = ?', userId);
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'USER', ?, 'USUARIO_ELIMINADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'USER', ?, 'USUARIO_ELIMINADO', ?, ?, ?)`,
     crypto.randomUUID(),
     userId,
     actor.id,

@@ -12,9 +12,9 @@ export async function POST(request: Request) {
 
     let user = null;
     if (body.quickCode) {
-      user = getUserByEmployeeCodeOrId(body.quickCode);
+      user = await getUserByEmployeeCodeOrId(body.quickCode);
     } else if (body.login && body.password) {
-      user = authenticateUser(body.login, body.password);
+      user = await authenticateUser(body.login, body.password);
     }
 
     if (!user) {

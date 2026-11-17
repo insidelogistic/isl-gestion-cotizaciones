@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { getDb, nowMexicoISO } from '../db';
+import { getAsyncDb, nowMexicoISO } from '../db';
 import { assertPermission } from '../auth/rbac';
 import { storeDocumentInDriveStructure } from './googleDriveClient';
 import type { SafeUser } from '../db/types';
@@ -34,7 +34,7 @@ export interface DocumentRecord {
   created_at: string;
 }
 
-export function uploadExpedienteDocument(
+export async function uploadExpedienteDocument(
   actor: SafeUser,
   input: {
     request_id: string;
@@ -46,13 +46,14 @@ export function uploadExpedienteDocument(
     mime_type: string;
     content_base64: string;
   }
-): DocumentRecord {
+): Promise<DocumentRecord> {
   assertPermission(actor, 'UPDATE_REQUEST');
 
-  const db = getDb();
-  const reqRow = db
-    .prepare('SELECT id, folio, received_date FROM quote_requests WHERE id = ?')
-    .get(input.request_id) as { id: string; folio: string; received_date: string } | undefined;
+  const db = await getAsyncDb();
+  const reqRow = await db.get<{ id: string; folio: string; received_date: string }>(
+    'SELECT id, folio, received_date FROM quote_requests WHERE id = ?',
+    input.request_id
+  );
 
   if (!reqRow) {
     throw new Error('El expediente asociado al documento no existe.');
@@ -64,27 +65,35 @@ export function uploadExpedienteDocument(
   const buffer = Buffer.from(cleanBase64, 'base64');
   const year = reqRow.received_date.slice(0, 4) || '2026';
 
-  const storage = storeDocumentInDriveStructure({
-    year,
-    folio: reqRow.folio,
-    category: input.category,
-    originalName: input.original_name,
-    buffer,
-  });
+  let driveFolderPath = `IN SIDE LOGISTIC / COTIZACIONES / ${year} / ${reqRow.folio} / ${input.category}`;
+  let driveFileId = `drv-${crypto.randomUUID().slice(0, 8)}`;
+  let storedPathMeta = driveFolderPath;
+
+  try {
+    const storage = storeDocumentInDriveStructure({
+      year,
+      folio: reqRow.folio,
+      category: input.category,
+      originalName: input.original_name,
+      buffer,
+    });
+    driveFolderPath = storage.driveFolderPath;
+    driveFileId = storage.driveFileId;
+    storedPathMeta = `${storage.driveFolderPath}::${storage.localVaultPath}`;
+  } catch {
+    // En entornos serverless (Vercel) el disco local es efímero o de solo lectura;
+    // el contenido binario persiste de forma segura en file_data dentro de PostgreSQL.
+  }
 
   const id = `doc-${crypto.randomUUID().slice(0, 8)}`;
   const now = nowMexicoISO();
 
-  // Guardamos tanto la ruta lógica de Drive como la ruta física interna separada por "::"
-  const storedPathMeta = `${storage.driveFolderPath}::${storage.localVaultPath}`;
-
-  db.prepare(
+  await db.run(
     `INSERT INTO documents (
       id, request_id, revision_id, activity_id, closure_id,
       category, original_name, mime_type, size_bytes,
-      drive_file_id, drive_folder_path, uploaded_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+      drive_file_id, drive_folder_path, file_data, uploaded_by, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     input.request_id,
     input.revision_id || null,
@@ -94,16 +103,16 @@ export function uploadExpedienteDocument(
     input.original_name,
     input.mime_type || 'application/octet-stream',
     buffer.byteLength,
-    storage.driveFileId,
+    driveFileId,
     storedPathMeta,
+    cleanBase64,
     actor.id,
     now
   );
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'QUOTE_REQUEST', ?, 'DOCUMENTO_ADJUNTADO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'QUOTE_REQUEST', ?, 'DOCUMENTO_ADJUNTADO', ?, ?, ?)`,
     crypto.randomUUID(),
     input.request_id,
     actor.id,
@@ -111,12 +120,12 @@ export function uploadExpedienteDocument(
       document_id: id,
       original_name: input.original_name,
       category: input.category,
-      drive_folder: storage.driveFolderPath,
+      drive_folder: driveFolderPath,
     }),
     now
   );
 
-  const list = listExpedienteDocuments(input.request_id);
+  const list = await listExpedienteDocuments(input.request_id);
   const created = list.find((d) => d.id === id);
   if (!created) {
     throw new Error('Error al recuperar el documento registrado.');
@@ -124,21 +133,22 @@ export function uploadExpedienteDocument(
   return created;
 }
 
-export function listExpedienteDocuments(requestId: string): DocumentRecord[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT
-        d.*,
-        u.name AS uploaded_by_name,
-        qr.revision_code AS revision_code
-       FROM documents d
-       JOIN users u ON u.id = d.uploaded_by
-       LEFT JOIN quote_revisions qr ON qr.id = d.revision_id
-       WHERE d.request_id = ?
-       ORDER BY d.created_at DESC`
-    )
-    .all(requestId) as unknown as DocumentRecord[];
+export async function listExpedienteDocuments(requestId: string): Promise<DocumentRecord[]> {
+  const db = await getAsyncDb();
+  const rows = await db.all<DocumentRecord>(
+    `SELECT
+      d.id, d.request_id, d.revision_id, d.activity_id, d.closure_id,
+      d.category, d.original_name, d.mime_type, d.size_bytes,
+      d.drive_file_id, d.drive_folder_path, d.uploaded_by, d.created_at,
+      u.name AS uploaded_by_name,
+      qr.revision_code AS revision_code
+     FROM documents d
+     JOIN users u ON u.id = d.uploaded_by
+     LEFT JOIN quote_revisions qr ON qr.id = d.revision_id
+     WHERE d.request_id = ?
+     ORDER BY d.created_at DESC`,
+    requestId
+  );
 
   return rows.map((r) => ({
     ...r,
@@ -146,15 +156,19 @@ export function listExpedienteDocuments(requestId: string): DocumentRecord[] {
   }));
 }
 
-export function getDocumentForDownload(actor: SafeUser, documentId: string): {
+export async function getDocumentForDownload(
+  actor: SafeUser,
+  documentId: string
+): Promise<{
   record: DocumentRecord;
   buffer: Buffer;
-} {
+}> {
   assertPermission(actor, 'VIEW_REQUESTS');
-  const db = getDb();
-  const row = db
-    .prepare('SELECT * FROM documents WHERE id = ?')
-    .get(documentId) as unknown as DocumentRecord | undefined;
+  const db = await getAsyncDb();
+  const row = await db.get<DocumentRecord & { file_data?: string | null }>(
+    'SELECT * FROM documents WHERE id = ?',
+    documentId
+  );
 
   if (!row) {
     throw new Error('Documento no encontrado.');
@@ -162,15 +176,33 @@ export function getDocumentForDownload(actor: SafeUser, documentId: string): {
 
   const parts = (row.drive_folder_path || '').split('::');
   const localPath = parts[1];
-  if (!localPath || !fs.existsSync(localPath)) {
-    throw new Error('El archivo físico no se encuentra disponible en la bóveda documental.');
+
+  let buffer: Buffer | null = null;
+  if (localPath && fs.existsSync(localPath)) {
+    buffer = fs.readFileSync(localPath);
+  } else if (row.file_data) {
+    buffer = Buffer.from(row.file_data, 'base64');
   }
 
-  const buffer = fs.readFileSync(localPath);
+  if (!buffer) {
+    throw new Error('El archivo físico no se encuentra disponible en el almacenamiento.');
+  }
+
   return {
     record: {
-      ...row,
+      id: row.id,
+      request_id: row.request_id,
+      revision_id: row.revision_id,
+      activity_id: row.activity_id,
+      closure_id: row.closure_id,
+      category: row.category,
+      original_name: row.original_name,
+      mime_type: row.mime_type,
+      size_bytes: row.size_bytes,
+      drive_file_id: row.drive_file_id,
       drive_folder_path: parts[0],
+      uploaded_by: row.uploaded_by,
+      created_at: row.created_at,
     },
     buffer,
   };

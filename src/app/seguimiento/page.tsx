@@ -12,8 +12,8 @@ export default async function SeguimientoPage() {
   const user = await getSessionUser();
   if (!user) redirect('/login');
 
-  const commitments = listFollowUpCommitments({});
-  const alerts = getOperationalAlertsSummary();
+  const commitments = await listFollowUpCommitments({});
+  const alerts = await getOperationalAlertsSummary();
 
   return (
     <AppShell user={user} urgentCount={alerts.totalUrgentCount}>

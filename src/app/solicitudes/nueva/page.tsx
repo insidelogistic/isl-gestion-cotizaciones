@@ -19,10 +19,10 @@ export default async function NuevaSolicitudPage() {
     redirect('/solicitudes');
   }
 
-  const customers = listCustomers();
-  const contacts = listCustomerContacts();
-  const users = listUsers();
-  const requests = listQuoteRequests({});
+  const customers = await listCustomers();
+  const contacts = await listCustomerContacts();
+  const users = await listUsers();
+  const requests = await listQuoteRequests({});
   const urgentCount = requests.filter(
     (r) => r.deadline_semaphore === 'POR_VENCER' || r.deadline_semaphore === 'VENCIDA'
   ).length;

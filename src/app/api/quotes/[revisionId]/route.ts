@@ -16,7 +16,7 @@ export async function GET(
   }
 
   const { revisionId } = await context.params;
-  const revision = getQuoteRevisionById(revisionId);
+  const revision = await getQuoteRevisionById(revisionId);
   if (!revision) {
     return NextResponse.json({ success: false, message: 'Revisión no encontrada.' }, { status: 404 });
   }
@@ -35,7 +35,7 @@ export async function PUT(
 
     const { revisionId } = await context.params;
     const body = await request.json();
-    const updated = updateDraftQuoteRevision(user, revisionId, {
+    const updated = await updateDraftQuoteRevision(user, revisionId, {
       currency: body.currency || 'MXN',
       issue_date: body.issue_date || body.quote_date,
       tax_rate: body.tax_rate !== undefined ? Number(body.tax_rate) : 16,
@@ -69,7 +69,7 @@ export async function DELETE(
     }
 
     const { revisionId } = await context.params;
-    deleteQuoteRevision(user, revisionId);
+    await deleteQuoteRevision(user, revisionId);
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Error al eliminar la revisión.';

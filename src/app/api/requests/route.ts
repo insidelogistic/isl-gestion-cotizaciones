@@ -12,7 +12,7 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const requests = listQuoteRequests({
+  const requests = await listQuoteRequests({
     search: searchParams.get('search') || undefined,
     status: (searchParams.get('status') as RequestStatus | 'ALL') || 'ALL',
     customerId: searchParams.get('customer_id') || undefined,
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const created = createQuoteRequest(user, body);
+    const created = await createQuoteRequest(user, body);
     return NextResponse.json({ success: true, request: created }, { status: 201 });
   } catch (err) {
     if (err instanceof PermissionError) {

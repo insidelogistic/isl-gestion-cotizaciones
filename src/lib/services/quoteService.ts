@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, nowMexicoISO } from '../db';
+import { getAsyncDb, nowMexicoISO } from '../db';
 import { assertPermission } from '../auth/rbac';
 import type { SafeUser } from '../db/types';
 
@@ -56,7 +56,7 @@ export function addBusinessDays(startDateStr: string, businessDays: number = 3):
 
   while (remaining > 0) {
     date.setUTCDate(date.getUTCDate() + 1);
-    const dayOfWeek = date.getUTCDay(); // 0 = Domingo, 6 = Sábado
+    const dayOfWeek = date.getUTCDay();
     if (dayOfWeek !== 0 && dayOfWeek !== 6) {
       remaining--;
     }
@@ -65,57 +65,54 @@ export function addBusinessDays(startDateStr: string, businessDays: number = 3):
   return date.toISOString().slice(0, 10);
 }
 
-export function listQuoteRevisions(requestId: string): QuoteRevisionRecord[] {
-  const db = getDb();
-  const revisions = db
-    .prepare(
-      `SELECT
-        qr.*,
-        u.name AS created_by_name,
-        up.name AS presented_by_name
-       FROM quote_revisions qr
-       JOIN users u ON u.id = qr.created_by
-       LEFT JOIN users up ON up.id = qr.presented_by
-       WHERE qr.request_id = ?
-       ORDER BY qr.revision_number DESC`
-    )
-    .all(requestId) as unknown as Omit<QuoteRevisionRecord, 'items'>[];
+export async function listQuoteRevisions(requestId: string): Promise<QuoteRevisionRecord[]> {
+  const db = await getAsyncDb();
+  const revisions = await db.all<Omit<QuoteRevisionRecord, 'items'>>(
+    `SELECT
+      qr.*,
+      u.name AS created_by_name,
+      up.name AS presented_by_name
+     FROM quote_revisions qr
+     JOIN users u ON u.id = qr.created_by
+     LEFT JOIN users up ON up.id = qr.presented_by
+     WHERE qr.request_id = ?
+     ORDER BY qr.revision_number DESC`,
+    requestId
+  );
 
-  return revisions.map((rev) => {
-    const items = (
-      db
-        .prepare('SELECT * FROM quote_items WHERE revision_id = ? ORDER BY sort_order ASC')
-        .all(rev.id) as unknown as QuoteItemRecord[]
-    ).map((it) => ({ ...it }));
-    return {
-      ...rev,
-      items,
-    };
-  });
+  const out: QuoteRevisionRecord[] = [];
+  for (const rev of revisions) {
+    const items = await db.all<QuoteItemRecord>(
+      'SELECT * FROM quote_items WHERE revision_id = ? ORDER BY sort_order ASC',
+      rev.id
+    );
+    out.push({ ...rev, items });
+  }
+  return out;
 }
 
-export function getQuoteRevisionById(revisionId: string): QuoteRevisionRecord | null {
-  const db = getDb();
-  const rev = db
-    .prepare(
-      `SELECT
-        qr.*,
-        u.name AS created_by_name,
-        up.name AS presented_by_name
-       FROM quote_revisions qr
-       JOIN users u ON u.id = qr.created_by
-       LEFT JOIN users up ON up.id = qr.presented_by
-       WHERE qr.id = ?`
-    )
-    .get(revisionId) as unknown as Omit<QuoteRevisionRecord, 'items'> | undefined;
+export async function getQuoteRevisionById(
+  revisionId: string
+): Promise<QuoteRevisionRecord | null> {
+  const db = await getAsyncDb();
+  const rev = await db.get<Omit<QuoteRevisionRecord, 'items'>>(
+    `SELECT
+      qr.*,
+      u.name AS created_by_name,
+      up.name AS presented_by_name
+     FROM quote_revisions qr
+     JOIN users u ON u.id = qr.created_by
+     LEFT JOIN users up ON up.id = qr.presented_by
+     WHERE qr.id = ?`,
+    revisionId
+  );
 
   if (!rev) return null;
 
-  const items = (
-    db
-      .prepare('SELECT * FROM quote_items WHERE revision_id = ? ORDER BY sort_order ASC')
-      .all(rev.id) as unknown as QuoteItemRecord[]
-  ).map((it) => ({ ...it }));
+  const items = await db.all<QuoteItemRecord>(
+    'SELECT * FROM quote_items WHERE revision_id = ? ORDER BY sort_order ASC',
+    rev.id
+  );
 
   return {
     ...rev,
@@ -123,7 +120,7 @@ export function getQuoteRevisionById(revisionId: string): QuoteRevisionRecord | 
   };
 }
 
-export function createQuoteRevision(
+export async function createQuoteRevision(
   actor: SafeUser,
   input: {
     request_id: string;
@@ -136,25 +133,26 @@ export function createQuoteRevision(
     items?: QuoteItemInput[];
     associated_document_id?: string | null;
   }
-): QuoteRevisionRecord {
+): Promise<QuoteRevisionRecord> {
   assertPermission(actor, 'MANAGE_QUOTES');
-  const db = getDb();
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
 
-  const reqRow = db
-    .prepare('SELECT id, folio, status FROM quote_requests WHERE id = ?')
-    .get(input.request_id) as { id: string; folio: string; status: string } | undefined;
+  const reqRow = await db.get<{ id: string; folio: string; status: string }>(
+    'SELECT id, folio, status FROM quote_requests WHERE id = ?',
+    input.request_id
+  );
 
   if (!reqRow) {
     throw new Error('El expediente de solicitud no existe.');
   }
 
-  // Determinar siguiente número de revisión: Rev. 00, Rev. 01, Rev. 02...
-  const maxRow = db
-    .prepare('SELECT MAX(revision_number) as max_rev, COUNT(*) as count FROM quote_revisions WHERE request_id = ?')
-    .get(input.request_id) as { max_rev: number | null; count: number };
+  const maxRow = await db.get<{ max_rev: number | null; count: number }>(
+    'SELECT MAX(revision_number) as max_rev, COUNT(*) as count FROM quote_revisions WHERE request_id = ?',
+    input.request_id
+  );
 
-  const nextRevNumber = maxRow.count === 0 ? 0 : (maxRow.max_rev ?? 0) + 1;
+  const nextRevNumber = !maxRow || Number(maxRow.count) === 0 ? 0 : (maxRow.max_rev ?? 0) + 1;
   const revisionCode = `Rev. ${String(nextRevNumber).padStart(2, '0')}`;
   const id = `qrev-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -170,7 +168,9 @@ export function createQuoteRevision(
       const qty = Number(item.quantity);
       const price = Number(item.unit_price);
       if (!item.concept?.trim() || qty <= 0 || price < 0) {
-        throw new Error('Todos los conceptos deben tener descripción, cantidad mayor a 0 y precio unitario válido.');
+        throw new Error(
+          'Todos los conceptos deben tener descripción, cantidad mayor a 0 y precio unitario válido.'
+        );
       }
       const amount = roundMoney(qty * price);
       subtotal = roundMoney(subtotal + amount);
@@ -185,22 +185,22 @@ export function createQuoteRevision(
   } else {
     subtotal = roundMoney(Number(input.subtotal ?? 0));
     if (subtotal <= 0) {
-      throw new Error('En la Modalidad B (Externa) debe indicar un importe ofertado antes de impuestos mayor a 0.');
+      throw new Error(
+        'En la Modalidad B (Externa) debe indicar un importe ofertado antes de impuestos mayor a 0.'
+      );
     }
   }
 
   const taxAmount = roundMoney(subtotal * (taxRate / 100));
   const total = roundMoney(subtotal + taxAmount);
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    db.prepare(
+  await db.transaction(async (tx) => {
+    await tx.run(
       `INSERT INTO quote_revisions (
         id, request_id, revision_code, revision_number, modality, currency,
         issue_date, subtotal, tax_rate, tax_amount, total,
         status, is_immutable, observations, created_by, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BORRADOR', 0, ?, ?, ?)`
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BORRADOR', 0, ?, ?, ?)`,
       id,
       input.request_id,
       revisionCode,
@@ -218,12 +218,11 @@ export function createQuoteRevision(
     );
 
     if (input.modality === 'INTERNAL') {
-      const insertItem = db.prepare(
-        `INSERT INTO quote_items (id, revision_id, concept, unit, quantity, unit_price, amount, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      validItems.forEach((it, idx) => {
-        insertItem.run(
+      for (let idx = 0; idx < validItems.length; idx++) {
+        const it = validItems[idx];
+        await tx.run(
+          `INSERT INTO quote_items (id, revision_id, concept, unit, quantity, unit_price, amount, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           `qitm-${crypto.randomUUID().slice(0, 8)}`,
           id,
           it.concept,
@@ -233,28 +232,29 @@ export function createQuoteRevision(
           it.amount,
           idx + 1
         );
-      });
+      }
     }
 
     if (input.associated_document_id) {
-      db.prepare('UPDATE documents SET revision_id = ? WHERE id = ? AND request_id = ?').run(
+      await tx.run(
+        'UPDATE documents SET revision_id = ? WHERE id = ? AND request_id = ?',
         id,
         input.associated_document_id,
         input.request_id
       );
     }
 
-    // Si la solicitud estaba en RECIBIDA, pasarla automáticamente a EN_ELABORACION;
-    // si ya estaba PRESENTADA y se crea una nueva revisión, pasarla a EN_NEGOCIACION
     if (reqRow.status === 'RECIBIDA') {
-      db.prepare('UPDATE quote_requests SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?').run(
+      await tx.run(
+        'UPDATE quote_requests SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?',
         'EN_ELABORACION',
         actor.id,
         now,
         input.request_id
       );
     } else if (reqRow.status === 'PRESENTADA' && nextRevNumber > 0) {
-      db.prepare('UPDATE quote_requests SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?').run(
+      await tx.run(
+        'UPDATE quote_requests SET status = ?, updated_by = ?, updated_at = ? WHERE id = ?',
         'EN_NEGOCIACION',
         actor.id,
         now,
@@ -262,10 +262,9 @@ export function createQuoteRevision(
       );
     }
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-       VALUES (?, 'QUOTE_REQUEST', ?, 'COTIZACION_REVISION_CREADA', ?, ?, ?)`
-    ).run(
+       VALUES (?, 'QUOTE_REQUEST', ?, 'COTIZACION_REVISION_CREADA', ?, ?, ?)`,
       crypto.randomUUID(),
       input.request_id,
       actor.id,
@@ -278,17 +277,12 @@ export function createQuoteRevision(
       }),
       now
     );
+  });
 
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  return getQuoteRevisionById(id)!;
+  return (await getQuoteRevisionById(id))!;
 }
 
-export function updateDraftQuoteRevision(
+export async function updateDraftQuoteRevision(
   actor: SafeUser,
   revisionId: string,
   input: {
@@ -299,10 +293,10 @@ export function updateDraftQuoteRevision(
     observations?: string | null;
     items?: QuoteItemInput[];
   }
-): QuoteRevisionRecord {
+): Promise<QuoteRevisionRecord> {
   assertPermission(actor, 'MANAGE_QUOTES');
-  const db = getDb();
-  const existing = getQuoteRevisionById(revisionId);
+  const db = await getAsyncDb();
+  const existing = await getQuoteRevisionById(revisionId);
   if (!existing) {
     throw new Error('La revisión de cotización no existe.');
   }
@@ -341,13 +335,11 @@ export function updateDraftQuoteRevision(
   const taxAmount = roundMoney(subtotal * (taxRate / 100));
   const total = roundMoney(subtotal + taxAmount);
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    db.prepare(
+  await db.transaction(async (tx) => {
+    await tx.run(
       `UPDATE quote_revisions
        SET currency = ?, issue_date = ?, subtotal = ?, tax_rate = ?, tax_amount = ?, total = ?, observations = ?
-       WHERE id = ?`
-    ).run(
+       WHERE id = ?`,
       input.currency,
       input.issue_date,
       subtotal,
@@ -359,13 +351,12 @@ export function updateDraftQuoteRevision(
     );
 
     if (existing.modality === 'INTERNAL') {
-      db.prepare('DELETE FROM quote_items WHERE revision_id = ?').run(revisionId);
-      const insertItem = db.prepare(
-        `INSERT INTO quote_items (id, revision_id, concept, unit, quantity, unit_price, amount, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      validItems.forEach((it, idx) => {
-        insertItem.run(
+      await tx.run('DELETE FROM quote_items WHERE revision_id = ?', revisionId);
+      for (let idx = 0; idx < validItems.length; idx++) {
+        const it = validItems[idx];
+        await tx.run(
+          `INSERT INTO quote_items (id, revision_id, concept, unit, quantity, unit_price, amount, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           `qitm-${crypto.randomUUID().slice(0, 8)}`,
           revisionId,
           it.concept,
@@ -375,19 +366,14 @@ export function updateDraftQuoteRevision(
           it.amount,
           idx + 1
         );
-      });
+      }
     }
+  });
 
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-
-  return getQuoteRevisionById(revisionId)!;
+  return (await getQuoteRevisionById(revisionId))!;
 }
 
-export function markQuoteRevisionAsPresented(
+export async function markQuoteRevisionAsPresented(
   actor: SafeUser,
   input: {
     revision_id: string;
@@ -398,13 +384,13 @@ export function markQuoteRevisionAsPresented(
     evidence_document_id?: string | null;
     notes?: string | null;
   }
-): {
+): Promise<{
   revision: QuoteRevisionRecord;
   proposedFollowUpDate: string;
-} {
+}> {
   assertPermission(actor, 'MANAGE_QUOTES');
-  const db = getDb();
-  const rev = getQuoteRevisionById(input.revision_id);
+  const db = await getAsyncDb();
+  const rev = await getQuoteRevisionById(input.revision_id);
   if (!rev) {
     throw new Error('Revisión de cotización no encontrada.');
   }
@@ -415,17 +401,16 @@ export function markQuoteRevisionAsPresented(
       ? input.custom_follow_up_date
       : addBusinessDays(input.presentation_date, input.follow_up_business_days ?? 3);
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    // 1. Marcar revisiones anteriores presentadas como HISTORICA (conservando su inmutabilidad)
-    db.prepare(
+  await db.transaction(async (tx) => {
+    await tx.run(
       `UPDATE quote_revisions
        SET status = 'HISTORICA'
-       WHERE request_id = ? AND status = 'PRESENTADA' AND id != ?`
-    ).run(rev.request_id, rev.id);
+       WHERE request_id = ? AND status = 'PRESENTADA' AND id != ?`,
+      rev.request_id,
+      rev.id
+    );
 
-    // 2. Marcar esta revisión como PRESENTADA e INMUTABLE
-    db.prepare(
+    await tx.run(
       `UPDATE quote_revisions
        SET status = 'PRESENTADA',
            is_immutable = 1,
@@ -433,8 +418,7 @@ export function markQuoteRevisionAsPresented(
            presentation_channel = ?,
            presented_by = ?,
            observations = COALESCE(?, observations)
-       WHERE id = ?`
-    ).run(
+       WHERE id = ?`,
       input.presentation_date,
       input.presentation_channel,
       actor.id,
@@ -443,28 +427,29 @@ export function markQuoteRevisionAsPresented(
     );
 
     if (input.evidence_document_id) {
-      db.prepare('UPDATE documents SET revision_id = ? WHERE id = ? AND request_id = ?').run(
+      await tx.run(
+        'UPDATE documents SET revision_id = ? WHERE id = ? AND request_id = ?',
         rev.id,
         input.evidence_document_id,
         rev.request_id
       );
     }
 
-    // 3. Actualizar el estado del expediente a PRESENTADA
-    db.prepare(
+    await tx.run(
       `UPDATE quote_requests
        SET status = 'PRESENTADA', updated_by = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(actor.id, now, rev.request_id);
+       WHERE id = ?`,
+      actor.id,
+      now,
+      rev.request_id
+    );
 
-    // 4. Programar automáticamente la actividad de seguimiento comercial
-    db.prepare(
+    await tx.run(
       `INSERT INTO follow_up_activities (
         id, request_id, activity_type, activity_date, responsible_user_id,
         description, next_activity_date, next_activity_description,
         is_completed, reminder_cancelled, created_by, created_at
-      ) VALUES (?, ?, 'SEGUIMIENTO', ?, ?, ?, ?, ?, 0, 0, ?, ?)`
-    ).run(
+      ) VALUES (?, ?, 'SEGUIMIENTO', ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
       `act-${crypto.randomUUID().slice(0, 8)}`,
       rev.request_id,
       input.presentation_date,
@@ -476,11 +461,9 @@ export function markQuoteRevisionAsPresented(
       now
     );
 
-    // 5. Registrar en bitácora de auditoría
-    db.prepare(
+    await tx.run(
       `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-       VALUES (?, 'QUOTE_REQUEST', ?, 'COTIZACION_PRESENTADA', ?, ?, ?)`
-    ).run(
+       VALUES (?, 'QUOTE_REQUEST', ?, 'COTIZACION_PRESENTADA', ?, ?, ?)`,
       crypto.randomUUID(),
       rev.request_id,
       actor.id,
@@ -494,42 +477,36 @@ export function markQuoteRevisionAsPresented(
       }),
       now
     );
-
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 
   return {
-    revision: getQuoteRevisionById(rev.id)!,
+    revision: (await getQuoteRevisionById(rev.id))!,
     proposedFollowUpDate,
   };
 }
 
-export function deleteQuoteRevision(actor: SafeUser, revisionId: string): void {
+export async function deleteQuoteRevision(actor: SafeUser, revisionId: string): Promise<void> {
   if (actor.role !== 'ADMIN') {
     throw new Error('Acceso denegado: Solo el Administrador puede eliminar revisiones de cotización.');
   }
-  const db = getDb();
-  const existing = getQuoteRevisionById(revisionId);
+  const db = await getAsyncDb();
+  const existing = await getQuoteRevisionById(revisionId);
   if (!existing) {
     throw new Error('Revisión de cotización no encontrada.');
   }
 
-  db.exec('BEGIN IMMEDIATE TRANSACTION');
-  try {
-    db.prepare('UPDATE documents SET revision_id = NULL WHERE revision_id = ?').run(revisionId);
-    db.prepare(
-      'UPDATE commercial_closures SET awarded_revision_id = NULL WHERE awarded_revision_id = ?'
-    ).run(revisionId);
-    db.prepare('DELETE FROM quote_items WHERE revision_id = ?').run(revisionId);
-    db.prepare('DELETE FROM quote_revisions WHERE id = ?').run(revisionId);
+  await db.transaction(async (tx) => {
+    await tx.run('UPDATE documents SET revision_id = NULL WHERE revision_id = ?', revisionId);
+    await tx.run(
+      'UPDATE commercial_closures SET awarded_revision_id = NULL WHERE awarded_revision_id = ?',
+      revisionId
+    );
+    await tx.run('DELETE FROM quote_items WHERE revision_id = ?', revisionId);
+    await tx.run('DELETE FROM quote_revisions WHERE id = ?', revisionId);
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-       VALUES (?, 'QUOTE_REQUEST', ?, 'REVISION_COTIZACION_ELIMINADA', ?, ?, ?)`
-    ).run(
+       VALUES (?, 'QUOTE_REQUEST', ?, 'REVISION_COTIZACION_ELIMINADA', ?, ?, ?)`,
       crypto.randomUUID(),
       existing.request_id,
       actor.id,
@@ -540,9 +517,5 @@ export function deleteQuoteRevision(actor: SafeUser, revisionId: string): void {
       }),
       nowMexicoISO()
     );
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 }

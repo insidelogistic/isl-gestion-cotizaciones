@@ -1,13 +1,27 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { seedDatabaseIfNeeded } from './seed';
+import { Pool, types, type PoolClient } from 'pg';
+import { seedAsyncDatabaseIfNeeded, seedDatabaseIfNeeded } from './seed';
+
+// Asegurar que PostgreSQL devuelva NUMERIC / REAL / BIGINT como números JavaScript
+types.setTypeParser(1700, (val) => parseFloat(val));
+types.setTypeParser(700, (val) => parseFloat(val));
+types.setTypeParser(701, (val) => parseFloat(val));
+types.setTypeParser(20, (val) => parseInt(val, 10));
+
+export interface AsyncDb {
+  all<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T[]>;
+  get<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T | undefined>;
+  run(sql: string, ...params: unknown[]): Promise<void>;
+  transaction<T>(fn: (tx: AsyncDb) => Promise<T>): Promise<T>;
+}
 
 let globalDb: DatabaseSync | null = null;
+let globalPgPool: Pool | null = null;
+let pgInitPromise: Promise<void> | null = null;
 
-export const SCHEMA_DDL = `
-PRAGMA foreign_keys = ON;
-
+export const SHARED_DDL = `
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     employee_code TEXT UNIQUE NOT NULL,
@@ -146,6 +160,7 @@ CREATE TABLE IF NOT EXISTS documents (
     size_bytes INTEGER NOT NULL DEFAULT 0,
     drive_file_id TEXT,
     drive_folder_path TEXT,
+    file_data TEXT,
     uploaded_by TEXT NOT NULL REFERENCES users(id),
     created_at TEXT NOT NULL
 );
@@ -200,6 +215,130 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 `;
 
+export const SCHEMA_DDL = `PRAGMA foreign_keys = ON;\n${SHARED_DDL}`;
+
+function toPgSql(sql: string): string {
+  let index = 0;
+  let inSingleQuote = false;
+  let result = '';
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === "'" && sql[i - 1] !== '\\') {
+      inSingleQuote = !inSingleQuote;
+      result += ch;
+    } else if (ch === '?' && !inSingleQuote) {
+      index += 1;
+      result += `$${index}`;
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
+function wrapSqlite(db: DatabaseSync): AsyncDb {
+  const adapter: AsyncDb = {
+    async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+      const rows = db.prepare(sql).all(...(params as (string | number | null | Uint8Array)[])) as Record<
+        string,
+        unknown
+      >[];
+      return rows.map((r) => ({ ...r })) as T[];
+    },
+    async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
+      const row = db.prepare(sql).get(...(params as (string | number | null | Uint8Array)[])) as
+        | Record<string, unknown>
+        | undefined;
+      return row ? ({ ...row } as T) : undefined;
+    },
+    async run(sql: string, ...params: unknown[]): Promise<void> {
+      db.prepare(sql).run(...(params as (string | number | null | Uint8Array)[]));
+    },
+    async transaction<T>(fn: (tx: AsyncDb) => Promise<T>): Promise<T> {
+      db.exec('BEGIN IMMEDIATE TRANSACTION');
+      try {
+        const res = await fn(adapter);
+        db.exec('COMMIT');
+        return res;
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    },
+  };
+  return adapter;
+}
+
+function wrapPgRunner(runner: Pool | PoolClient): AsyncDb {
+  return {
+    async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+      const res = await runner.query(toPgSql(sql), params);
+      return res.rows.map((r) => ({ ...r })) as T[];
+    },
+    async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
+      const res = await runner.query(toPgSql(sql), params);
+      return res.rows[0] ? ({ ...res.rows[0] } as T) : undefined;
+    },
+    async run(sql: string, ...params: unknown[]): Promise<void> {
+      await runner.query(toPgSql(sql), params);
+    },
+    async transaction<T>(fn: (tx: AsyncDb) => Promise<T>): Promise<T> {
+      if (!('release' in runner)) {
+        const client = await (runner as Pool).connect();
+        try {
+          await client.query('BEGIN');
+          const res = await fn(wrapPgRunner(client));
+          await client.query('COMMIT');
+          return res;
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
+        }
+      }
+      return fn(wrapPgRunner(runner));
+    },
+  };
+}
+
+function getPgPool(): Pool {
+  if (!globalPgPool) {
+    globalPgPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 10,
+    });
+  }
+  return globalPgPool;
+}
+
+export async function getAsyncDb(): Promise<AsyncDb> {
+  // En pruebas locales (globalDb inyectado por Vitest) o sin DATABASE_URL, usar SQLite
+  if (globalDb || !process.env.DATABASE_URL) {
+    return wrapSqlite(getDb());
+  }
+
+  const pool = getPgPool();
+  const adapter = wrapPgRunner(pool);
+
+  if (!pgInitPromise) {
+    pgInitPromise = (async () => {
+      const statements = SHARED_DDL.split(';')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const stmt of statements) {
+        await pool.query(stmt);
+      }
+      await pool.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_data TEXT');
+      await seedAsyncDatabaseIfNeeded(adapter);
+    })();
+  }
+  await pgInitPromise;
+
+  return adapter;
+}
+
 export function createTestDatabase(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
   db.exec(SCHEMA_DDL);
@@ -216,7 +355,8 @@ export function getDb(): DatabaseSync {
     return globalDb;
   }
 
-  const dbPathEnv = process.env.SQLITE_DB_PATH || path.join(process.cwd(), 'data', 'isl_cotizaciones.sqlite');
+  const dbPathEnv =
+    process.env.SQLITE_DB_PATH || path.join(process.cwd(), 'data', 'isl_cotizaciones.sqlite');
   if (dbPathEnv !== ':memory:') {
     const dir = path.dirname(dbPathEnv);
     if (!fs.existsSync(dir)) {
@@ -226,12 +366,16 @@ export function getDb(): DatabaseSync {
 
   globalDb = new DatabaseSync(dbPathEnv);
   globalDb.exec(SCHEMA_DDL);
+  try {
+    globalDb.exec('ALTER TABLE documents ADD COLUMN file_data TEXT');
+  } catch {
+    // La columna file_data ya existe en la tabla local
+  }
   seedDatabaseIfNeeded(globalDb);
   return globalDb;
 }
 
 export function nowMexicoISO(): string {
-  // Retorna timestamp ISO ajustado con referencia America/Mexico_City
   return new Date().toISOString();
 }
 

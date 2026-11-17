@@ -26,9 +26,9 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
     expect(addBusinessDays('2026-11-16', 3)).toBe('2026-11-19');
   });
 
-  it('registra Cotización Modalidad A (interna con conceptos), calcula subtotal/IVA/total y genera Rev. 00', () => {
-    const editor = authenticateUser('ING-0001', 'EditorISL2026!')!;
-    const req = createQuoteRequest(editor, {
+  it('registra Cotización Modalidad A (interna con conceptos), calcula subtotal/IVA/total y genera Rev. 00', async () => {
+    const editor = (await authenticateUser('ING-0001', 'EditorISL2026!'))!;
+    const req = await createQuoteRequest(editor, {
       origin_type: 'DIRECTA_VW',
       project_name: 'Maquinado de Soportes Especiales Nave 4',
       description: 'Fabricación en acero 1045',
@@ -41,7 +41,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
       reception_channel: 'Correo Electrónico',
     });
 
-    const rev00 = createQuoteRevision(editor, {
+    const rev00 = await createQuoteRevision(editor, {
       request_id: req.id,
       modality: 'INTERNAL',
       currency: 'MXN',
@@ -72,9 +72,9 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
     expect(rev00.items).toHaveLength(2);
   });
 
-  it('registra Cotización Modalidad B (elaborada externamente en Excel) sin exigir conceptos y vincula documento', () => {
-    const editor = authenticateUser('ING-0002', 'EditorISL2026!')!;
-    const req = createQuoteRequest(editor, {
+  it('registra Cotización Modalidad B (elaborada externamente en Excel) sin exigir conceptos y vincula documento', async () => {
+    const editor = (await authenticateUser('ING-0002', 'EditorISL2026!'))!;
+    const req = await createQuoteRequest(editor, {
       origin_type: 'LICITACION_VW',
       project_name: 'Licitación Anual Mantenimiento Transportadores',
       description: 'Según LASTENHEFT y estructura económica VWM',
@@ -87,7 +87,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
       has_economic_excel: true,
     });
 
-    const docExcel = uploadExpedienteDocument(editor, {
+    const docExcel = await uploadExpedienteDocument(editor, {
       request_id: req.id,
       category: 'COTIZACION',
       original_name: 'Estructura_Economica_VWM_7710.xlsx',
@@ -95,7 +95,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
       content_base64: Buffer.from('Excel Contenido Simulado').toString('base64'),
     });
 
-    const rev00 = createQuoteRevision(editor, {
+    const rev00 = await createQuoteRevision(editor, {
       request_id: req.id,
       modality: 'EXTERNAL',
       currency: 'USD',
@@ -113,15 +113,15 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
     expect(rev00.total).toBe(172260);
     expect(rev00.items).toHaveLength(0);
 
-    const docs = listExpedienteDocuments(req.id);
+    const docs = await listExpedienteDocuments(req.id);
     expect(docs).toHaveLength(1);
     expect(docs[0].revision_id).toBe(rev00.id);
     expect(docs[0].drive_folder_path).toContain(req.folio);
   });
 
-  it('marca una revisión como PRESENTADA, la vuelve inmutable, propone seguimiento a 3 días hábiles y permite crear Rev. 01 sin sobrescribir Rev. 00 ni duplicar importes', () => {
-    const editor = authenticateUser('ING-0001', 'EditorISL2026!')!;
-    const req = createQuoteRequest(editor, {
+  it('marca una revisión como PRESENTADA, la vuelve inmutable, propone seguimiento a 3 días hábiles y permite crear Rev. 01 sin sobrescribir Rev. 00 ni duplicar importes', async () => {
+    const editor = (await authenticateUser('ING-0001', 'EditorISL2026!'))!;
+    const req = await createQuoteRequest(editor, {
       origin_type: 'LICITACION_VW',
       project_name: 'Adecuación de Tolvas Nave 21',
       description: 'Suministro e instalación',
@@ -132,7 +132,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
       vw_buyer_name: 'Lic. Claudia Von Der Meden',
     });
 
-    const rev00 = createQuoteRevision(editor, {
+    const rev00 = await createQuoteRevision(editor, {
       request_id: req.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
@@ -143,7 +143,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
     });
 
     // Marcar Rev. 00 como presentada el viernes 2026-11-13
-    const presentationResult = markQuoteRevisionAsPresented(editor, {
+    const presentationResult = await markQuoteRevisionAsPresented(editor, {
       revision_id: rev00.id,
       presentation_date: '2026-11-13',
       presentation_channel: 'Plataforma Volkswagen',
@@ -156,12 +156,12 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
     expect(presentationResult.proposedFollowUpDate).toBe('2026-11-18');
 
     // Verificar que el expediente pasó a PRESENTADA
-    const updatedDetail = getQuoteRequestById(req.id)!;
+    const updatedDetail = (await getQuoteRequestById(req.id))!;
     expect(updatedDetail.request.status).toBe('PRESENTADA');
     expect(updatedDetail.request.next_activity_date).toBe('2026-11-18');
 
     // Intentar modificar Rev. 00 presentada debe fallar por inmutabilidad
-    expect(() =>
+    await expect(
       updateDraftQuoteRevision(editor, rev00.id, {
         currency: 'MXN',
         issue_date: '2026-11-14',
@@ -169,10 +169,10 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
         tax_rate: 16,
         observations: 'Intento de sobrescribir oferta presentada',
       })
-    ).toThrow(/inmutable/i);
+    ).rejects.toThrow(/inmutable/i);
 
     // Crear nueva revisión Rev. 01 con ajuste económico
-    const rev01 = createQuoteRevision(editor, {
+    const rev01 = await createQuoteRevision(editor, {
       request_id: req.id,
       modality: 'EXTERNAL',
       currency: 'MXN',
@@ -186,7 +186,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
     expect(rev01.subtotal).toBe(235000);
 
     // Presentar Rev. 01
-    markQuoteRevisionAsPresented(editor, {
+    await markQuoteRevisionAsPresented(editor, {
       revision_id: rev01.id,
       presentation_date: '2026-11-16',
       presentation_channel: 'Correo electrónico',
@@ -195,19 +195,19 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
 
     // Verificar que existen ambas revisiones (Rev. 00 intacta con 250,000 y Rev. 01 con 235,000)
     // y que el importe ofertado vigente del expediente es 235,000 (NO la suma 485,000)
-    const afterRev01 = getQuoteRequestById(req.id)!;
+    const afterRev01 = (await getQuoteRequestById(req.id))!;
     expect(afterRev01.revisions).toHaveLength(2);
 
-    const listed = listQuoteRequests({ search: req.folio });
+    const listed = await listQuoteRequests({ search: req.folio });
     expect(listed[0].latest_offered_amount).toBe(235000);
     expect(listed[0].latest_revision_code).toBe('Rev. 01');
   });
 
-  it('impide que un usuario con rol CONSULTA cree cotizaciones o suba documentos', () => {
-    const editor = authenticateUser('ING-0001', 'EditorISL2026!')!;
-    const viewer = authenticateUser('CON-0001', 'ConsultaISL2026!')!;
+  it('impide que un usuario con rol CONSULTA cree cotizaciones o suba documentos', async () => {
+    const editor = (await authenticateUser('ING-0001', 'EditorISL2026!'))!;
+    const viewer = (await authenticateUser('CON-0001', 'ConsultaISL2026!'))!;
 
-    const req = createQuoteRequest(editor, {
+    const req = await createQuoteRequest(editor, {
       origin_type: 'OTRO_CLIENTE',
       customer_id: 'cust-audi',
       project_name: 'Reparación de husillo',
@@ -218,7 +218,7 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
       reception_channel: 'Correo Electrónico',
     });
 
-    expect(() =>
+    await expect(
       createQuoteRevision(viewer, {
         request_id: req.id,
         modality: 'EXTERNAL',
@@ -227,9 +227,9 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
         subtotal: 50000,
         tax_rate: 16,
       })
-    ).toThrow(PermissionError);
+    ).rejects.toThrow(PermissionError);
 
-    expect(() =>
+    await expect(
       uploadExpedienteDocument(viewer, {
         request_id: req.id,
         category: 'SOLICITUD',
@@ -237,6 +237,6 @@ describe('Entrega 2 — Cotizaciones (Modalidad A y B), Revisiones Inmutables y 
         mime_type: 'application/pdf',
         content_base64: Buffer.from('PDF').toString('base64'),
       })
-    ).toThrow(PermissionError);
+    ).rejects.toThrow(PermissionError);
   });
 });

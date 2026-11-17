@@ -17,8 +17,8 @@ export default async function CierresPage() {
   const user = await getSessionUser();
   if (!user) redirect('/login');
 
-  const requests = listQuoteRequests({});
-  const closures = listCommercialClosures();
+  const requests = await listQuoteRequests({});
+  const closures = await listCommercialClosures();
   const closureByRequestId = new Map(closures.map((c) => [c.request_id, c]));
 
   const urgentCount = requests.filter(

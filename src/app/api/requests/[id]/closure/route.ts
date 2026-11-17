@@ -15,7 +15,7 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const closure = getCommercialClosureByRequestId(id);
+  const closure = await getCommercialClosureByRequestId(id);
   return NextResponse.json({ success: true, closure });
 }
 
@@ -31,7 +31,7 @@ export async function POST(
 
     const { id } = await context.params;
     const body = await request.json();
-    const closure = registerCommercialClosure(user, {
+    const closure = await registerCommercialClosure(user, {
       request_id: id,
       result: body.result,
       closure_date: body.closure_date,

@@ -14,7 +14,7 @@ export async function POST(
 
     const { revisionId } = await context.params;
     const body = await request.json();
-    const result = markQuoteRevisionAsPresented(user, {
+    const result = await markQuoteRevisionAsPresented(user, {
       revision_id: revisionId,
       presentation_date: body.presentation_date,
       presentation_channel: body.presentation_channel,

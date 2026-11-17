@@ -1,4 +1,4 @@
-import { getDb } from '../db';
+import { getAsyncDb } from '../db';
 import { hashPassword } from '../db/seed';
 import type { SafeUser, UserRecord, UserRole } from '../db/types';
 
@@ -55,14 +55,17 @@ export function toSafeUser(record: UserRecord): SafeUser {
   };
 }
 
-export function authenticateUser(loginOrEmail: string, passwordPlain: string): SafeUser | null {
-  const db = getDb();
+export async function authenticateUser(
+  loginOrEmail: string,
+  passwordPlain: string
+): Promise<SafeUser | null> {
+  const db = await getAsyncDb();
   const normalized = loginOrEmail.trim();
-  const row = db
-    .prepare(
-      `SELECT * FROM users WHERE (LOWER(email) = LOWER(?) OR UPPER(employee_code) = UPPER(?)) AND is_active = 1`
-    )
-    .get(normalized, normalized) as UserRecord | undefined;
+  const row = await db.get<UserRecord>(
+    `SELECT * FROM users WHERE (LOWER(email) = LOWER(?) OR UPPER(employee_code) = UPPER(?)) AND is_active = 1`,
+    normalized,
+    normalized
+  );
 
   if (!row) {
     return null;
@@ -76,11 +79,13 @@ export function authenticateUser(loginOrEmail: string, passwordPlain: string): S
   return toSafeUser(row);
 }
 
-export function getUserByEmployeeCodeOrId(codeOrId: string): SafeUser | null {
-  const db = getDb();
-  const row = db
-    .prepare(`SELECT * FROM users WHERE (id = ? OR UPPER(employee_code) = UPPER(?)) AND is_active = 1`)
-    .get(codeOrId, codeOrId) as UserRecord | undefined;
+export async function getUserByEmployeeCodeOrId(codeOrId: string): Promise<SafeUser | null> {
+  const db = await getAsyncDb();
+  const row = await db.get<UserRecord>(
+    `SELECT * FROM users WHERE (id = ? OR UPPER(employee_code) = UPPER(?)) AND is_active = 1`,
+    codeOrId,
+    codeOrId
+  );
 
   return row ? toSafeUser(row) : null;
 }

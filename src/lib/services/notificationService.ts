@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getDb, nowMexicoISO, todayMexicoDate } from '../db';
+import { getAsyncDb, nowMexicoISO, todayMexicoDate } from '../db';
 import { listQuoteRequests } from './requestService';
 import { listFollowUpCommitments } from './followUpService';
 import type { SafeUser } from '../db/types';
@@ -14,19 +14,17 @@ export interface InternalEmailNotification {
   transportMode: 'RESEND_API' | 'INTERNAL_MAILBOX_VAULT';
 }
 
-export function getOperationalAlertsSummary(referenceDateStr?: string) {
+export async function getOperationalAlertsSummary(referenceDateStr?: string) {
   const refDate = referenceDateStr ?? todayMexicoDate();
-  const requests = listQuoteRequests({});
+  const requests = await listQuoteRequests({});
 
-  // 1. Cotizaciones por vencer o vencidas (activas)
   const expiringRequests = requests.filter(
     (r) =>
       r.status !== 'CERRADA' &&
       (r.deadline_semaphore === 'POR_VENCER' || r.deadline_semaphore === 'VENCIDA')
   );
 
-  // 2. Compromisos de seguimiento pendientes
-  const commitments = listFollowUpCommitments({
+  const commitments = await listFollowUpCommitments({
     onlyPending: true,
     referenceDateStr: refDate,
   });
@@ -46,34 +44,26 @@ export function getOperationalAlertsSummary(referenceDateStr?: string) {
   };
 }
 
-/**
- * Envía recordatorios y avisos operativos EXCLUSIVAMENTE al personal interno de IN SIDE LOGISTIC.
- * Cumple la regla estricta de la Sección 13: "Las notificaciones serán únicamente internas para usuarios de IN SIDE LOGISTIC".
- */
-export function dispatchInternalAlertEmails(
+export async function dispatchInternalAlertEmails(
   actor: SafeUser,
   referenceDateStr?: string
-): {
+): Promise<{
   dispatchedCount: number;
   emails: InternalEmailNotification[];
-} {
-  const db = getDb();
+}> {
+  const db = await getAsyncDb();
   const now = nowMexicoISO();
-  const summary = getOperationalAlertsSummary(referenceDateStr);
+  const summary = await getOperationalAlertsSummary(referenceDateStr);
 
-  // Obtener usuarios internos activos de IN SIDE LOGISTIC
-  const internalUsers = db
-    .prepare(
-      `SELECT id, name, email, role
-       FROM users
-       WHERE is_active = 1 AND role IN ('ADMIN', 'EDITOR')`
-    )
-    .all() as Array<{ id: string; name: string; email: string; role: string }>;
+  const internalUsers = await db.all<{ id: string; name: string; email: string; role: string }>(
+    `SELECT id, name, email, role
+     FROM users
+     WHERE is_active = 1 AND role IN ('ADMIN', 'EDITOR')`
+  );
 
   const emails: InternalEmailNotification[] = [];
 
   for (const u of internalUsers) {
-    // Seguridad: Validar que el destinatario pertenezca al dominio corporativo interno
     if (!u.email.toLowerCase().endsWith('@insidelogistic.com.mx')) {
       continue;
     }
@@ -133,10 +123,9 @@ export function dispatchInternalAlertEmails(
     emails.push(notification);
   }
 
-  db.prepare(
+  await db.run(
     `INSERT INTO audit_logs (id, entity_type, entity_id, action, actor_user_id, details_json, created_at)
-     VALUES (?, 'NOTIFICATION', ?, 'NOTIFICACION_INTERNA_CORREO', ?, ?, ?)`
-  ).run(
+     VALUES (?, 'NOTIFICATION', ?, 'NOTIFICACION_INTERNA_CORREO', ?, ?, ?)`,
     crypto.randomUUID(),
     'ALERTAS_INTERNAS',
     actor.id,

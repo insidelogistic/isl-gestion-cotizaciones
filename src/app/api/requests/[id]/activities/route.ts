@@ -13,7 +13,7 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const activities = listFollowUpCommitments({ requestId: id });
+  const activities = await listFollowUpCommitments({ requestId: id });
   return NextResponse.json({ success: true, activities });
 }
 
@@ -29,7 +29,7 @@ export async function POST(
   try {
     const { id } = await context.params;
     const body = await request.json();
-    const activity = registerFollowUpActivity(user, {
+    const activity = await registerFollowUpActivity(user, {
       request_id: id,
       activity_type: body.activity_type || 'SEGUIMIENTO',
       activity_date: body.activity_date,

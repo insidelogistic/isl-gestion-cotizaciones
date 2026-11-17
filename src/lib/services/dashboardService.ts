@@ -1,4 +1,4 @@
-import { getDb, todayMexicoDate } from '../db';
+import { getAsyncDb, todayMexicoDate } from '../db';
 import { listQuoteRequests, computeDeadlineSemaphore } from './requestService';
 import { listFollowUpCommitments } from './followUpService';
 import type { EnrichedQuoteRequest, RequestStatus } from '../db/types';
@@ -36,24 +36,19 @@ export interface DashboardMetrics {
   filteredRequests: EnrichedQuoteRequest[];
 }
 
-/**
- * Calcula los 8 indicadores ejecutivos del Dashboard (Sección 5 del Prompt Maestro):
- * - No duplica importes por revisiones de una misma oferta: utiliza la última revisión presentada
- *   correspondiente (o última revisión vigente), sin sumar sus versiones anteriores.
- * - Para adjudicaciones parciales o totales, utiliza el importe efectivamente adjudicado.
- */
-export function getDashboardMetrics(filters: DashboardFilterOptions = {}): DashboardMetrics {
-  const db = getDb();
+export async function getDashboardMetrics(
+  filters: DashboardFilterOptions = {}
+): Promise<DashboardMetrics> {
+  const db = await getAsyncDb();
   const refDate = filters.referenceDateStr ?? todayMexicoDate();
 
-  const rawRequests = listQuoteRequests({
+  const rawRequests = await listQuoteRequests({
     dateFrom: filters.dateFrom,
     dateTo: filters.dateTo,
     customerId: filters.customerId,
     responsibleUserId: filters.responsibleUserId,
   });
 
-  // Recalcular el semáforo respecto a refDate cuando se pasa explícitamente
   const requests = rawRequests.map((r) => {
     const { semaphore, daysUntil } = computeDeadlineSemaphore(r.deadline_date, r.status, refDate);
     return {
@@ -65,10 +60,8 @@ export function getDashboardMetrics(filters: DashboardFilterOptions = {}): Dashb
 
   const requestIds = new Set(requests.map((r) => r.id));
 
-  // 1. Solicitudes activas (no cerradas)
   const activeRequestsCount = requests.filter((r) => r.status !== 'CERRADA').length;
 
-  // 2. Cotizaciones presentadas (expedientes que tienen al menos una revisión PRESENTADA o están en PRESENTADA/EN_NEGOCIACION/CERRADA con oferta)
   const presentedQuotesCount = requests.filter(
     (r) =>
       r.status === 'PRESENTADA' ||
@@ -76,18 +69,18 @@ export function getDashboardMetrics(filters: DashboardFilterOptions = {}): Dashb
       (r.latest_offered_amount !== null && r.latest_offered_amount > 0)
   ).length;
 
-  // 3. Importe total ofertado vigente (sin duplicar revisiones históricas de una misma solicitud)
-  const totalOfferedAmount = Math.round(
-    requests.reduce((acc, r) => acc + Number(r.latest_offered_amount || 0), 0) * 100
-  ) / 100;
+  const totalOfferedAmount =
+    Math.round(requests.reduce((acc, r) => acc + Number(r.latest_offered_amount || 0), 0) * 100) /
+    100;
 
-  // 4. Importe total adjudicado (suma de awarded_amount en commercial_closures de las solicitudes filtradas)
-  const closuresRows = db
-    .prepare(
-      `SELECT request_id, result, COALESCE(awarded_amount, 0) AS awarded_amount
-       FROM commercial_closures`
-    )
-    .all() as Array<{ request_id: string; result: string; awarded_amount: number }>;
+  const closuresRows = await db.all<{
+    request_id: string;
+    result: string;
+    awarded_amount: number;
+  }>(
+    `SELECT request_id, result, COALESCE(awarded_amount, 0) AS awarded_amount
+     FROM commercial_closures`
+  );
 
   const filteredClosures = closuresRows.filter((c) => requestIds.has(c.request_id));
   const totalAwardedAmount =
@@ -97,25 +90,22 @@ export function getDashboardMetrics(filters: DashboardFilterOptions = {}): Dashb
         .reduce((acc, c) => acc + Number(c.awarded_amount || 0), 0) * 100
     ) / 100;
 
-  // 5. Cotizaciones por vencer (activas con semáforo POR_VENCER o VENCIDA)
   const expiringQuotesCount = requests.filter(
     (r) =>
       r.status !== 'CERRADA' &&
       (r.deadline_semaphore === 'POR_VENCER' || r.deadline_semaphore === 'VENCIDA')
   ).length;
 
-  // 6 y 7. Seguimientos pendientes y vencidos de las solicitudes filtradas
-  const allPendingCommitments = listFollowUpCommitments({
-    onlyPending: true,
-    referenceDateStr: refDate,
-  }).filter((c) => requestIds.has(c.request_id));
+  const allPendingCommitments = (
+    await listFollowUpCommitments({
+      onlyPending: true,
+      referenceDateStr: refDate,
+    })
+  ).filter((c) => requestIds.has(c.request_id));
 
   const pendingFollowUpsCount = allPendingCommitments.length;
-  const overdueFollowUpsCount = allPendingCommitments.filter(
-    (c) => c.urgency === 'VENCIDO'
-  ).length;
+  const overdueFollowUpsCount = allPendingCommitments.filter((c) => c.urgency === 'VENCIDO').length;
 
-  // 8. Cotizaciones por estado comercial
   const stageCounts: Record<RequestStatus, number> = {
     RECIBIDA: requests.filter((r) => r.status === 'RECIBIDA').length,
     EN_ELABORACION: requests.filter((r) => r.status === 'EN_ELABORACION').length,

@@ -11,9 +11,9 @@ export default async function CatalogosPage() {
   const user = await getSessionUser();
   if (!user) redirect('/login');
 
-  const customers = listCustomers();
-  const contacts = listCustomerContacts();
-  const users = listUsers();
+  const customers = await listCustomers();
+  const contacts = await listCustomerContacts();
+  const users = await listUsers();
 
   return (
     <AppShell user={user}>
