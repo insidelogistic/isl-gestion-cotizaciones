@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+data/*.sqlite*
+data/drive_vault/
+.env
+.env.*
+!.env.example
+*.log

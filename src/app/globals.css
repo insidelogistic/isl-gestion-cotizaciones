@@ -1,0 +1,93 @@
+@import 'tailwindcss';
+
+:root {
+  /* Identidad corporativa oficial IN SIDE LOGISTIC */
+  --isl-azul: #0F2747;
+  --isl-azul-hover: #16365F;
+  --isl-rojo: #C72106;
+  --isl-rojo-hover: #A31B05;
+  --isl-negro: #0F172A;
+  --isl-blanco: #FFFFFF;
+
+  /* Colores neutros de interfaz (Referencia ERP TRANS) */
+  --isl-gris-oscuro: #4B5563;
+  --isl-gris-medio: #98A2B3;
+  --isl-gris-claro: #E5E7EB;
+  --isl-fondo-secundario: #F5F7FA;
+
+  /* Estados comerciales */
+  --estado-recibida: #1D4ED8;
+  --estado-elaboracion: #B45309;
+  --estado-presentada: #0369A1;
+  --estado-negociacion: #6D28D9;
+  --estado-adjudicada: #15803D;
+  --estado-no-adjudicada: #B91C1C;
+}
+
+@theme {
+  --font-sans: var(--fuente-textos), system-ui, -apple-system, sans-serif;
+  --font-heading: var(--fuente-titulos), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--fuente-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --color-isl-azul: #0F2747;
+  --color-isl-azul-hover: #16365F;
+  --color-isl-rojo: #C72106;
+  --color-isl-rojo-hover: #A31B05;
+  --color-isl-fondo: #F5F7FA;
+}
+
+@layer base {
+  body {
+    font-family: var(--fuente-textos);
+    color: var(--isl-negro);
+    background-color: var(--isl-fondo-secundario);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-titulos {
+    font-family: var(--fuente-titulos);
+  }
+
+  input, select, textarea, button, table {
+    font-family: var(--fuente-textos);
+  }
+
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--isl-rojo);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(199, 33, 6, 0.14);
+  }
+}
+
+/* Homologación visual con ERP TRANS: Recuadros con trazo azul definido y esquinas curvas */
+.isl-card {
+  background-color: #FFFFFF;
+  border-radius: 0.875rem;
+  border: 2px solid #60a5fa;
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.04), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
+}
+
+.isl-card-subtle {
+  background-color: #FFFFFF;
+  border-radius: 0.75rem;
+  border: 1.5px solid #bfdbfe;
+  box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.03);
+}
+
+.shadow-industrial-red {
+  box-shadow: 0 4px 14px 0 rgba(199, 33, 6, 0.24);
+}
+
+.azia-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.azia-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #CBD5E1;
+  border-radius: 9999px;
+}
+
+.azia-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
