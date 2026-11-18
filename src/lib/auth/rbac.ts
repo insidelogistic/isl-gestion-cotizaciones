@@ -1,5 +1,5 @@
 import { getAsyncDb } from '../db';
-import { hashPassword } from '../db/seed';
+import { verifyPassword } from '../db/seed';
 import type { SafeUser, UserRecord, UserRole } from '../db/types';
 
 export type PermissionAction =
@@ -67,12 +67,7 @@ export async function authenticateUser(
     normalized
   );
 
-  if (!row) {
-    return null;
-  }
-
-  const expectedHash = hashPassword(passwordPlain);
-  if (row.password_hash !== expectedHash) {
+  if (!row || !verifyPassword(passwordPlain, row.password_hash)) {
     return null;
   }
 

@@ -2,7 +2,6 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ShieldCheck, Wrench, Eye } from 'lucide-react';
 import { BrandLogo } from '@/components/layout/BrandLogo';
 
 export default function LoginPage() {
@@ -30,28 +29,6 @@ export default function LoginPage() {
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error de autenticación.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleQuickLogin = async (quickCode: string) => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quickCode }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || 'No fue posible iniciar sesión.');
-      }
-      router.push('/solicitudes');
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error de acceso.');
     } finally {
       setLoading(false);
     }
@@ -129,52 +106,9 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* ACCESO RÁPIDO POR ROL PARA VALIDACIÓN DE ACEPTACIÓN (ADMIN, EDITOR, CONSULTA) */}
-          <div className="mt-6 pt-5 border-t border-slate-200">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block text-center mb-3 font-titulos">
-              Acceso Rápido por Rol Autorizado (Validación Entrega 1)
-            </span>
-            <div className="grid grid-cols-1 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('DIR-0001')}
-                className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-800 font-semibold border border-slate-300 transition cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-[#0F2747]" />
-                  <span>Administrador (Lic. Roberto Sánchez)</span>
-                </span>
-                <span className="font-mono text-[11px] font-bold text-[#0F2747]">DIR-0001</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('ING-0001')}
-                className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-800 font-semibold border border-slate-300 transition cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <Wrench className="w-4 h-4 text-[#C72106]" />
-                  <span>Editor Comercial (Ing. Fernando Morales)</span>
-                </span>
-                <span className="font-mono text-[11px] font-bold text-[#C72106]">ING-0001</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('CON-0001')}
-                className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-800 font-semibold border border-slate-300 transition cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-emerald-700" />
-                  <span>Consulta / Solo Lectura (C.P. Laura Méndez)</span>
-                </span>
-                <span className="font-mono text-[11px] font-bold text-emerald-700">CON-0001</span>
-              </button>
-            </div>
-            <p className="text-[11px] text-slate-400 text-center mt-3">
-              Acceso exclusivo para personal autorizado de IN SIDE LOGISTIC. Registro público deshabilitado.
-            </p>
-          </div>
+          <p className="text-[11px] text-slate-400 text-center mt-5 pt-4 border-t border-slate-200">
+            Acceso exclusivo para personal autorizado de IN SIDE LOGISTIC. Registro público deshabilitado.
+          </p>
         </div>
       </div>
     </div>

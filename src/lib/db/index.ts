@@ -331,6 +331,22 @@ export async function getAsyncDb(): Promise<AsyncDb> {
         await pool.query(stmt);
       }
       await pool.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_data TEXT');
+      const rlsTables = [
+        'users',
+        'customers',
+        'customer_contacts',
+        'folio_sequences',
+        'quote_requests',
+        'quote_revisions',
+        'quote_items',
+        'documents',
+        'follow_up_activities',
+        'commercial_closures',
+        'audit_logs',
+      ];
+      for (const table of rlsTables) {
+        await pool.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+      }
       await seedAsyncDatabaseIfNeeded(adapter);
     })();
   }

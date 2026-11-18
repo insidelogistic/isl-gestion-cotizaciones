@@ -4,6 +4,7 @@ import { getUserByEmployeeCodeOrId } from './rbac';
 import type { SafeUser } from '../db/types';
 
 export const SESSION_COOKIE_NAME = 'isl_cot_session';
+const MAX_SESSION_AGE_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
 
 function getSecret(): string {
   return (
@@ -25,10 +26,25 @@ export function verifySessionToken(token: string): string | null {
   if (parts.length !== 2) return null;
   const [base64, sig] = parts;
   const expectedSig = crypto.createHmac('sha256', getSecret()).update(base64).digest('base64url');
-  if (sig !== expectedSig) return null;
+
+  const sigBuf = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    return null;
+  }
+
   try {
-    const decoded = JSON.parse(Buffer.from(base64, 'base64url').toString('utf8')) as { userId?: string };
-    return decoded.userId ?? null;
+    const decoded = JSON.parse(Buffer.from(base64, 'base64url').toString('utf8')) as {
+      userId?: string;
+      iat?: number;
+    };
+    if (!decoded.userId || typeof decoded.iat !== 'number') {
+      return null;
+    }
+    if (Date.now() - decoded.iat > MAX_SESSION_AGE_MS) {
+      return null;
+    }
+    return decoded.userId;
   } catch {
     return null;
   }

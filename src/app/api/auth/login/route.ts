@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { authenticateUser, getUserByEmployeeCodeOrId } from '@/lib/auth/rbac';
+import { authenticateUser } from '@/lib/auth/rbac';
 import { createSessionToken, SESSION_COOKIE_NAME } from '@/lib/auth/session';
 
 export async function POST(request: Request) {
@@ -7,15 +7,12 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       login?: string;
       password?: string;
-      quickCode?: string;
     };
 
-    let user = null;
-    if (body.quickCode) {
-      user = await getUserByEmployeeCodeOrId(body.quickCode);
-    } else if (body.login && body.password) {
-      user = await authenticateUser(body.login, body.password);
-    }
+    const user =
+      body.login && body.password
+        ? await authenticateUser(body.login, body.password)
+        : null;
 
     if (!user) {
       return NextResponse.json(
@@ -35,6 +32,7 @@ export async function POST(request: Request) {
 
     response.cookies.set(SESSION_COOKIE_NAME, token, {
       httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
       maxAge: 60 * 60 * 24 * 7,

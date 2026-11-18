@@ -3,7 +3,24 @@ import crypto from 'node:crypto';
 import type { AsyncDb } from './index';
 
 export function hashPassword(plain: string): string {
-  return crypto.createHash('sha256').update(`isl_salt_${plain}`).digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(plain, salt, 64).toString('hex');
+  return `scrypt:${salt}:${derived}`;
+}
+
+export function verifyPassword(plain: string, storedHash: string): boolean {
+  if (storedHash.startsWith('scrypt:')) {
+    const [, salt, hexHash] = storedHash.split(':');
+    if (!salt || !hexHash) return false;
+    const derived = crypto.scryptSync(plain, salt, 64);
+    const storedBuf = Buffer.from(hexHash, 'hex');
+    return derived.length === storedBuf.length && crypto.timingSafeEqual(derived, storedBuf);
+  }
+  // Compatibilidad con hashes SHA-256 heredados ya guardados en BD
+  const legacyHash = crypto.createHash('sha256').update(`isl_salt_${plain}`).digest('hex');
+  const a = Buffer.from(legacyHash);
+  const b = Buffer.from(storedHash);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 const INITIAL_USERS = [
