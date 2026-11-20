@@ -2,7 +2,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { getAsyncDb, nowMexicoISO } from '../db';
 import { assertPermission } from '../auth/rbac';
-import { storeDocumentInDriveStructure } from './googleDriveClient';
+import {
+  downloadFileFromGoogleDrive,
+  isGoogleDriveCloudConfigured,
+  storeDocumentInDriveStructure,
+} from './googleDriveClient';
 import type { SafeUser } from '../db/types';
 
 export type DocumentCategory =
@@ -65,25 +69,19 @@ export async function uploadExpedienteDocument(
   const buffer = Buffer.from(cleanBase64, 'base64');
   const year = reqRow.received_date.slice(0, 4) || '2026';
 
-  let driveFolderPath = `IN SIDE LOGISTIC / COTIZACIONES / ${year} / ${reqRow.folio} / ${input.category}`;
-  let driveFileId = `drv-${crypto.randomUUID().slice(0, 8)}`;
-  let storedPathMeta = driveFolderPath;
-
-  try {
-    const storage = storeDocumentInDriveStructure({
-      year,
-      folio: reqRow.folio,
-      category: input.category,
-      originalName: input.original_name,
-      buffer,
-    });
-    driveFolderPath = storage.driveFolderPath;
-    driveFileId = storage.driveFileId;
-    storedPathMeta = `${storage.driveFolderPath}::${storage.localVaultPath}`;
-  } catch {
-    // En entornos serverless (Vercel) el disco local es efímero o de solo lectura;
-    // el contenido binario persiste de forma segura en file_data dentro de PostgreSQL.
-  }
+  const storage = await storeDocumentInDriveStructure({
+    year,
+    folio: reqRow.folio,
+    category: input.category,
+    originalName: input.original_name,
+    mimeType: input.mime_type || 'application/octet-stream',
+    buffer,
+  });
+  const driveFolderPath = storage.driveFolderPath;
+  const driveFileId = storage.driveFileId;
+  const storedPathMeta = storage.localVaultPath
+    ? `${storage.driveFolderPath}::${storage.localVaultPath}`
+    : storage.driveFolderPath;
 
   const id = `doc-${crypto.randomUUID().slice(0, 8)}`;
   const now = nowMexicoISO();
@@ -182,6 +180,13 @@ export async function getDocumentForDownload(
     buffer = fs.readFileSync(localPath);
   } else if (row.file_data) {
     buffer = Buffer.from(row.file_data, 'base64');
+  } else if (
+    row.drive_file_id &&
+    !row.drive_file_id.startsWith('drv-') &&
+    !row.drive_file_id.startsWith('gdrive-') &&
+    isGoogleDriveCloudConfigured()
+  ) {
+    buffer = await downloadFileFromGoogleDrive(row.drive_file_id);
   }
 
   if (!buffer) {

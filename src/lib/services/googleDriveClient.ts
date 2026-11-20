@@ -22,18 +22,49 @@ const SUBFOLDER_BY_CATEGORY: Record<string, string> = {
 };
 
 export function isGoogleDriveCloudConfigured(): boolean {
-  return Boolean(
-    process.env.GOOGLE_DRIVE_CLIENT_EMAIL &&
-      process.env.GOOGLE_DRIVE_PRIVATE_KEY &&
-      process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID
+  const hasRoot = Boolean(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID);
+  const hasOAuthRefresh = Boolean(
+    process.env.GOOGLE_DRIVE_CLIENT_ID &&
+      process.env.GOOGLE_DRIVE_CLIENT_SECRET &&
+      process.env.GOOGLE_DRIVE_REFRESH_TOKEN
   );
+  const hasServiceAccount = Boolean(
+    process.env.GOOGLE_DRIVE_CLIENT_EMAIL && process.env.GOOGLE_DRIVE_PRIVATE_KEY
+  );
+  return hasRoot && (hasOAuthRefresh || hasServiceAccount);
 }
 
 /**
- * Genera un JWT firmado RS256 para autenticar la Service Account ante Google OAuth2
- * exclusivamente del lado del servidor (sin exponer llaves en el cliente).
+ * Obtiene un access_token de Google OAuth2 en servidor:
+ * 1) OAuth2 Refresh Token (ideal para cuentas @gmail.com / Google One de pago)
+ * 2) Service Account JWT RS256 (para Google Workspace con Unidades Compartidas)
  */
 async function getGoogleDriveAccessToken(): Promise<string | null> {
+  const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_DRIVE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
+
+  if (clientId && clientSecret && refreshToken) {
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Error OAuth2 Google Drive (${response.status}): ${errText}`);
+    }
+
+    const data = (await response.json()) as { access_token: string };
+    return data.access_token;
+  }
+
   const clientEmail = process.env.GOOGLE_DRIVE_CLIENT_EMAIL;
   const rawPrivateKey = process.env.GOOGLE_DRIVE_PRIVATE_KEY;
   if (!clientEmail || !rawPrivateKey) return null;
@@ -76,57 +107,193 @@ async function getGoogleDriveAccessToken(): Promise<string | null> {
   return data.access_token;
 }
 
+async function findOrCreateDriveFolder(
+  token: string,
+  folderName: string,
+  parentId: string
+): Promise<string> {
+  const escapedName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const query = `name = '${escapedName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+    query
+  )}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+
+  const searchRes = await fetch(searchUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!searchRes.ok) {
+    throw new Error(`Error buscando carpeta en Google Drive (${searchRes.status})`);
+  }
+
+  const searchData = (await searchRes.json()) as { files?: Array<{ id: string }> };
+  if (searchData.files && searchData.files.length > 0) {
+    return searchData.files[0].id;
+  }
+
+  const createRes = await fetch(
+    'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+      }),
+    }
+  );
+  if (!createRes.ok) {
+    const errText = await createRes.text().catch(() => '');
+    throw new Error(`Error creando carpeta en Google Drive (${createRes.status}): ${errText}`);
+  }
+
+  const created = (await createRes.json()) as { id: string };
+  return created.id;
+}
+
+async function uploadFileToGoogleDrive(params: {
+  year: string | number;
+  folio: string;
+  subfolder: string;
+  originalName: string;
+  mimeType: string;
+  buffer: Buffer;
+}): Promise<string> {
+  const token = await getGoogleDriveAccessToken();
+  const rootId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+  if (!token || !rootId) {
+    throw new Error('Credenciales de Google Drive incompletas.');
+  }
+
+  const cotizacionesId = await findOrCreateDriveFolder(token, 'COTIZACIONES', rootId);
+  const yearId = await findOrCreateDriveFolder(token, String(params.year), cotizacionesId);
+  const folioId = await findOrCreateDriveFolder(token, params.folio, yearId);
+  const categoryId = await findOrCreateDriveFolder(token, params.subfolder, folioId);
+
+  const boundary = `isl_drive_${crypto.randomUUID().replace(/-/g, '')}`;
+  const metadataPart = JSON.stringify({
+    name: params.originalName,
+    parents: [categoryId],
+  });
+
+  const prefix = Buffer.from(
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadataPart}\r\n` +
+      `--${boundary}\r\nContent-Type: ${params.mimeType || 'application/octet-stream'}\r\n\r\n`,
+    'utf8'
+  );
+  const suffix = Buffer.from(`\r\n--${boundary}--`, 'utf8');
+  const multipartBody = Buffer.concat([prefix, params.buffer, suffix]);
+
+  const uploadRes = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+        'Content-Length': String(multipartBody.byteLength),
+      },
+      body: multipartBody,
+    }
+  );
+
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text().catch(() => '');
+    throw new Error(`Error subiendo archivo a Google Drive (${uploadRes.status}): ${errText}`);
+  }
+
+  const uploaded = (await uploadRes.json()) as { id: string };
+  return uploaded.id;
+}
+
+export async function downloadFileFromGoogleDrive(fileId: string): Promise<Buffer> {
+  const token = await getGoogleDriveAccessToken();
+  if (!token) {
+    throw new Error('Credenciales de Google Drive no configuradas.');
+  }
+
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Error descargando archivo de Google Drive (${res.status})`);
+  }
+  const arrayBuffer = await res.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
 /**
  * Almacena el archivo conservando el original en la estructura jerárquica:
  * IN SIDE LOGISTIC / COTIZACIONES / AÑO / FOLIO DE SOLICITUD / CATEGORÍA
  * Si las credenciales de Google Cloud están configuradas, sincroniza con Google Drive API v3.
  */
-export function storeDocumentInDriveStructure(params: {
+export async function storeDocumentInDriveStructure(params: {
   year: string | number;
   folio: string;
   category: string;
   originalName: string;
+  mimeType?: string;
   buffer: Buffer;
-}): DriveStorageResult {
+}): Promise<DriveStorageResult> {
   const subfolder = SUBFOLDER_BY_CATEGORY[params.category] || '07_OTROS_ANEXOS';
   const driveFolderPath = `IN SIDE LOGISTIC / COTIZACIONES / ${params.year} / ${params.folio} / ${subfolder}`;
 
-  // Almacenamiento seguro en bóveda del servidor (permite carga/descarga inmediata y respaldo local)
-  const vaultRoot =
-    process.env.SQLITE_DB_PATH === ':memory:'
-      ? path.join(process.cwd(), 'data', 'test_vault')
-      : path.join(process.cwd(), 'data', 'drive_vault');
+  let localVaultPath = '';
+  try {
+    const vaultRoot =
+      process.env.SQLITE_DB_PATH === ':memory:'
+        ? path.join(process.cwd(), 'data', 'test_vault')
+        : path.join(process.cwd(), 'data', 'drive_vault');
 
-  const targetDir = path.join(
-    vaultRoot,
-    'IN SIDE LOGISTIC',
-    'COTIZACIONES',
-    String(params.year),
-    params.folio,
-    subfolder
-  );
+    const targetDir = path.join(
+      vaultRoot,
+      'IN SIDE LOGISTIC',
+      'COTIZACIONES',
+      String(params.year),
+      params.folio,
+      subfolder
+    );
 
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    const safeFilename = `${Date.now()}_${params.originalName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    localVaultPath = path.join(targetDir, safeFilename);
+    fs.writeFileSync(localVaultPath, params.buffer);
+  } catch {
+    // En Vercel el sistema de archivos es de solo lectura; continúa hacia Google Drive y PostgreSQL.
   }
 
-  const safeFilename = `${Date.now()}_${params.originalName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-  const localVaultPath = path.join(targetDir, safeFilename);
-  fs.writeFileSync(localVaultPath, params.buffer);
+  let driveFileId = `gdrive-${crypto.randomUUID().slice(0, 12)}`;
+  let syncedWithCloud = false;
 
-  const driveFileId = `gdrive-${crypto.randomUUID().slice(0, 12)}`;
-
-  // Si existe configuración activa de Google Drive Cloud, dispara sincronización asíncrona controlada
   if (isGoogleDriveCloudConfigured()) {
-    void getGoogleDriveAccessToken().catch(() => {
-      // Respaldo seguro en bóveda local si la conexión externa falla temporalmente
-    });
+    try {
+      driveFileId = await uploadFileToGoogleDrive({
+        year: params.year,
+        folio: params.folio,
+        subfolder,
+        originalName: params.originalName,
+        mimeType: params.mimeType || 'application/octet-stream',
+        buffer: params.buffer,
+      });
+      syncedWithCloud = true;
+    } catch (err) {
+      console.error('Fallo sincronización con Google Drive:', err);
+    }
   }
 
   return {
     driveFileId,
     driveFolderPath,
     localVaultPath,
-    syncedWithCloud: isGoogleDriveCloudConfigured(),
+    syncedWithCloud,
   };
 }
